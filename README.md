@@ -194,14 +194,23 @@ Tests:
 cd backend && pip install -r requirements-dev.txt && pytest
 ```
 
-`tests/test_scenario.py` and `tests/test_coordination.py` skip unless something is already listening on `localhost:6379`. The coordination tests check that `claim_task` takes the highest-priority open task, that a missing agent does not claim, and that Scout’s `HANDOFF` is what Dispatcher turns into a `Decision` with `BASED_ON` evidence.
+`tests/test_scenario.py`, `tests/test_coordination.py`, and `tests/test_resume.py` skip unless something is already listening on `localhost:6379`. The coordination tests check that `claim_task` takes the highest-priority open task, that a missing agent does not claim, and that Scout’s `HANDOFF` is what Dispatcher turns into a `Decision` with `BASED_ON` evidence. The resume test claims a task, stops before the Decision, and checks that a later `resume` finishes that same task.
+
+Crash and resume, as two processes:
+
+```bash
+PYTHONPATH=backend python -m floodline.resume_demo --crash
+PYTHONPATH=backend python -m floodline.resume_demo --resume
+```
+
+`--crash` is Scout plus a claim, then exit. `--resume` does not reload the network. It reads the claimed task and the Dispatcher heartbeat from FalkorDB and writes the route Decision.
 
 ## Agents
 
 | Agent | This slice |
 |---|---|
 | Scout | Stub planner extracts a road. `close_road` updates `ROAD` and deletes `PASSABLE`. Writes `Report`, close `Decision`, and a `reassess` task with `HANDOFF`. The origin is the `Unit` node in the graph. |
-| Dispatcher | Claims the open `reassess` task in one query, and only if the `Agent` node exists. Calls `route`. Writes a route `Decision` with `SUPERSEDES`, `BASED_ON` (the close decision and the report), `USED_EDGE`, and `AFFECTS`. |
+| Dispatcher | Claims the open `reassess` task in one query, and only if the `Agent` node exists. Calls `route`. Writes a route `Decision` with `SUPERSEDES`, `BASED_ON` (the close decision and the report), `USED_EDGE`, and `AFFECTS`. A new process resumes a task left `claimed` and then claims anything still `open`. |
 | Analyst | `cut_off_areas` runs `algo.WCC` on `PASSABLE` and sets `District.cut_off`. |
 | Evacuation planner | `evac_capacity` runs `algo.maxFlow` from the district to shelters and names the saturated critical edge. |
 

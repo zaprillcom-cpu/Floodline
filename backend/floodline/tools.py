@@ -422,7 +422,11 @@ def claim_task(graph, agent: str, kind: str, now: str) -> dict | None:
     found = rows(result)
     if not found:
         return None
-    task_id, road_id, road_name, from_osmid, to_osmid, report_id, close_decision_id = found[0]
+    return _task_row(found[0])
+
+
+def _task_row(found) -> dict:
+    task_id, road_id, road_name, from_osmid, to_osmid, report_id, close_decision_id = found
     return {
         "id": task_id,
         "road_id": road_id,
@@ -432,6 +436,19 @@ def claim_task(graph, agent: str, kind: str, now: str) -> dict | None:
         "report_id": report_id,
         "close_decision_id": close_decision_id,
     }
+
+
+def claimed_tasks(graph, agent: str, kind: str) -> list[dict]:
+    """Tasks this agent already claimed and has not finished. A restart reads these back."""
+    found = rows(graph.query(cypher.CLAIMED_TASKS, {"agent": agent, "kind": kind}))
+    return [_task_row(row) for row in found]
+
+
+def touch_heartbeat(graph, agent: str, now: str) -> None:
+    graph.query(
+        "MATCH (a:Agent {name: $agent}) SET a.heartbeat_at = $now",
+        {"agent": agent, "now": now},
+    )
 
 
 def finish_task(graph, task_id: str, status: str = "done") -> None:

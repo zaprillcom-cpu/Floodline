@@ -139,6 +139,18 @@ WHERE NOT (outside)-[:IN_DISTRICT]->(:District {name: $district})
 RETURN DISTINCT r.road_id AS road_id, r.name AS name
 """
 
+CLAIMED_TASKS = """
+MATCH (:Agent {name: $agent})-[:CLAIMED]->(t:Task {status: 'claimed', kind: $kind})
+RETURN t.id AS id,
+       t.road_id AS road_id,
+       t.road_name AS road_name,
+       t.from_osmid AS from_osmid,
+       t.to_osmid AS to_osmid,
+       t.report_id AS report_id,
+       t.close_decision_id AS close_decision_id
+ORDER BY t.claimed_at
+"""
+
 EXPLAIN_DECISION = """
 MATCH (d:Decision {id: $id})
 OPTIONAL MATCH (d)-[:BASED_ON]->(evidence)

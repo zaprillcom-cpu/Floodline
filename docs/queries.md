@@ -184,6 +184,16 @@ RETURN t.id AS id, t.road_id AS road_id, t.road_name AS road_name,
        t.report_id AS report_id, t.close_decision_id AS close_decision_id
 ```
 
+A restart reads tasks this agent already claimed and did not finish:
+
+```cypher
+MATCH (:Agent {name: $agent})-[:CLAIMED]->(t:Task {status: 'claimed', kind: $kind})
+RETURN t.id, t.road_id, t.from_osmid, t.to_osmid, t.report_id, t.close_decision_id
+ORDER BY t.claimed_at
+```
+
+It finishes those, then claims any `reassess` task that is still `open`. `Agent.heartbeat_at` is set when the new process starts.
+
 Scout writes a done `ingest_report` task and an open `reassess` task, then:
 
 ```cypher
