@@ -1,0 +1,20 @@
+# FalkorDB 6.x (:latest) does not ship algo.AStar or CCH yet.
+# Floodline pins the C-engine image that does. Do not retag this to :latest.
+services:
+  falkordb:
+    image: falkordb/falkordb:v4.22.0
+    container_name: floodline-falkordb
+    ports:
+      - "${FALKORDB_PORT:-6379}:6379"
+    volumes:
+      - falkordb_data:/var/lib/falkordb/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+volumes:
+  falkordb_data:
