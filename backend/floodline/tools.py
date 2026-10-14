@@ -44,6 +44,10 @@ def snap_to_road(graph, lat: float, lon: float, radius_m: float = 8000) -> dict:
     except Exception:
         pass
 
+    scanned = _snap_scan(graph, lat, lon, radius_m)
+    if scanned is not None:
+        return scanned
+
     best = None
     best_dist = math.inf
     for place in PLACES:
@@ -59,6 +63,46 @@ def snap_to_road(graph, lat: float, lon: float, radius_m: float = 8000) -> dict:
         "dist_m": int(best_dist),
         "method": "haversine",
     }
+
+
+def _snap_scan(graph, lat: float, lon: float, radius_m: float) -> dict | None:
+    try:
+        found = rows(graph.query("MATCH (i:Intersection) RETURN i.osmid, i.name, i.lat, i.lon"))
+    except Exception:
+        return None
+    best = None
+    best_dist = math.inf
+    for osmid, name, node_lat, node_lon in found:
+        if node_lat is None or node_lon is None:
+            continue
+        dist = haversine_m(lat, lon, float(node_lat), float(node_lon))
+        if dist < best_dist:
+            best = (int(osmid), name, dist)
+            best_dist = dist
+    if best is None or best_dist > radius_m:
+        return None
+    return {
+        "osmid": best[0],
+        "name": best[1],
+        "dist_m": int(best_dist),
+        "method": "haversine",
+    }
+
+
+def reopen_road(graph, road_id: str) -> None:
+    """Undo a weight-only closure and put the PASSABLE mirrors back."""
+    graph.query(
+        """
+        MATCH (a)-[r:ROAD {road_id: $road_id}]->(b)
+        SET r.travel_s = r.base_travel_s,
+            r.capacity = coalesce(r.base_capacity, r.capacity),
+            r.status = 'open'
+        REMOVE r.closed_at, r.closed_by
+        WITH a, b, r
+        MERGE (a)-[:PASSABLE {road_id: r.road_id}]->(b)
+        """,
+        {"road_id": road_id},
+    )
 
 
 def close_road(graph, road_id: str, by: str = "Scout", at: str = T_CLOSE) -> dict:

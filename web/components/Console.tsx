@@ -159,9 +159,19 @@ export function Console() {
       </section>
 
       <footer className="note">
-        Synthetic road network for the October 2024 Valencia DANA story. Not an OpenStreetMap
-        extract. Hospital beds, the ambulance, and the report are synthetic. Map geometry is
-        drawn from the graph, not from a tile server.
+        {state?.network?.source === "osm" ? (
+          <>
+            Drive network © OpenStreetMap contributors (ODbL). Districts are nearest-town
+            centroids, not official boundaries. Hospital beds, shelters, the ambulance, and the
+            clock are synthetic. Timing is reconstructed.
+          </>
+        ) : (
+          <>
+            Synthetic road network for the October 2024 Valencia DANA story. Not an OpenStreetMap
+            extract. Hospital beds, the ambulance, and the report are synthetic. Map geometry is
+            drawn from the graph, not from a tile server.
+          </>
+        )}
       </footer>
     </main>
   );

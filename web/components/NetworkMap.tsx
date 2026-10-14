@@ -54,6 +54,9 @@ export function NetworkMap({ state }: { state: Snapshot }) {
   const before = state.routes?.before;
   const after = state.routes?.after;
   const closed = roads.filter((edge) => edge.status === "closed");
+  const dense = state.nodes.length > 40;
+  const osm = state.network?.source === "osm";
+  const title = osm ? "L'Horta Sud — OpenStreetMap drive network" : "L'Horta Sud — synthetic network";
 
   const summary = after
     ? `Old route ${before?.names.join(" to ")}, new route ${after.names.join(" to ")}.`
@@ -62,7 +65,7 @@ export function NetworkMap({ state }: { state: Snapshot }) {
   return (
     <svg className="map" viewBox={`0 0 ${WIDTH} ${HEIGHT}`} role="img" aria-label={summary}>
       <text x={PAD} y={28} fill="#1a2a22" fontSize="18" fontFamily="Palatino, Georgia, serif">
-        L&apos;Horta Sud — synthetic network
+        {title}
       </text>
       {roads.map((edge) => {
         const a = points.get(edge.from);
@@ -77,7 +80,7 @@ export function NetworkMap({ state }: { state: Snapshot }) {
             x2={b.x}
             y2={b.y}
             stroke={isClosed ? "#c2410c" : "#3e5248"}
-            strokeWidth={isClosed ? 7 : 3}
+            strokeWidth={isClosed ? (dense ? 3 : 7) : dense ? 1 : 3}
             strokeLinecap="round"
           />
         );
@@ -103,7 +106,7 @@ export function NetworkMap({ state }: { state: Snapshot }) {
           strokeLinecap="round"
         />
       )}
-      {closed.map((edge) => {
+      {closed.slice(0, 8).map((edge) => {
         const a = points.get(edge.from);
         const b = points.get(edge.to);
         if (!a || !b) return null;
@@ -126,6 +129,8 @@ export function NetworkMap({ state }: { state: Snapshot }) {
         const point = points.get(node.osmid);
         if (!point) return null;
         const unitHere = state.unit?.osmid === node.osmid;
+        const labeled = !dense || node.role !== "junction" || unitHere;
+        if (dense && node.role === "junction" && !unitHere) return null;
         return (
           <g key={node.osmid}>
             <circle
@@ -136,9 +141,11 @@ export function NetworkMap({ state }: { state: Snapshot }) {
               stroke="#f8faf5"
               strokeWidth="2"
             />
-            <text x={point.x + 10} y={point.y - 8} fill="#1a2a22" fontSize="13">
-              {unitHere ? `${state.unit?.callsign} · ${node.name}` : node.name}
-            </text>
+            {labeled && (
+              <text x={point.x + 10} y={point.y - 8} fill="#1a2a22" fontSize="13">
+                {unitHere ? `${state.unit?.callsign} · ${node.name}` : node.name}
+              </text>
+            )}
           </g>
         );
       })}
