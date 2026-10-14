@@ -153,7 +153,7 @@ ORDER BY dist_m ASC
 LIMIT 1
 ```
 
-If `point()` is unavailable, Scout falls back to a haversine scan of the ten intersections.
+If `point()` is unavailable, `snap_to_road` scans `Intersection` latitude and longitude in the graph, then the synthetic place table.
 
 ## Hospital choice
 
@@ -169,16 +169,16 @@ The Dispatcher routes to each row and keeps the smallest `travel_s`, breaking ti
 
 Atomic claim. FalkorDB serializes writes, so two Dispatchers cannot both observe `status = 'open'` and both claim:
 
+The agent is matched before the task is updated. A missing agent name leaves the task `open`.
+
 ```cypher
+MATCH (a:Agent {name: $agent})
 MATCH (t:Task {status: 'open', kind: $kind})
-WITH t
+WITH a, t
 ORDER BY t.priority DESC, t.created_at ASC
 LIMIT 1
-SET t.status = 'claimed', t.claimed_at = $now
-WITH t
-MATCH (a:Agent {name: $agent})
+SET t.status = 'claimed', t.claimed_at = $now, a.heartbeat_at = $now
 CREATE (a)-[:CLAIMED {at: $now}]->(t)
-SET a.heartbeat_at = $now
 RETURN t.id AS id, t.road_id AS road_id, t.road_name AS road_name,
        t.from_osmid AS from_osmid, t.to_osmid AS to_osmid,
        t.report_id AS report_id, t.close_decision_id AS close_decision_id

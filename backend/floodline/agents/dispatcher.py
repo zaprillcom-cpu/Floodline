@@ -9,6 +9,7 @@ from floodline.tools import (
     claim_task,
     explain,
     finish_task,
+    unit_state,
     write_route_decision,
 )
 
@@ -35,6 +36,8 @@ def reroute(graph, at: str = T_CLOSE) -> dict:
 
     previous = active_route_decision(graph)
     found = route(graph, task["from_osmid"], task["to_osmid"])
+    unit = unit_state(graph)
+    callsign = unit["callsign"] if unit else "A-7"
     before_text = "no previous route"
     delta = ""
     if previous:
@@ -43,7 +46,7 @@ def reroute(graph, at: str = T_CLOSE) -> dict:
         )
         delta = f" Delta {found.travel_s - previous['travel_s']:+d} s."
     explanation = (
-        f"Unit A-7 rerouted to the nearest open hospital because "
+        f"Unit {callsign} rerouted to the nearest open hospital because "
         f"{task['road_name']} closed at {at}. "
         f"Previous ETA {before_text}. "
         f"New ETA {_fmt(found.travel_s)} via {' → '.join(found.names)}."
@@ -60,6 +63,7 @@ def reroute(graph, at: str = T_CLOSE) -> dict:
         explanation=explanation,
         previous_id=previous["id"] if previous else None,
         evidence_ids=evidence,
+        callsign=callsign,
     )
     finish_task(graph, task["id"], "done")
     return {

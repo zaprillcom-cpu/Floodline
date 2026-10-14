@@ -194,14 +194,14 @@ Tests:
 cd backend && pip install -r requirements-dev.txt && pytest
 ```
 
-`tests/test_scenario.py` skips unless something is already listening on `localhost:6379`.
+`tests/test_scenario.py` and `tests/test_coordination.py` skip unless something is already listening on `localhost:6379`. The coordination tests check that `claim_task` takes the highest-priority open task, that a missing agent does not claim, and that Scout’s `HANDOFF` is what Dispatcher turns into a `Decision` with `BASED_ON` evidence.
 
 ## Agents
 
 | Agent | This slice |
 |---|---|
-| Scout | Stub planner extracts a road. `close_road` updates `ROAD` and deletes `PASSABLE`. Writes `Report`, close `Decision`, and a `reassess` task with `HANDOFF`. |
-| Dispatcher | Claims the open `reassess` task in one query. Calls `route` and `best_hospital`. Writes a route `Decision` with `SUPERSEDES`, `BASED_ON`, `USED_EDGE`, and `AFFECTS`. |
+| Scout | Stub planner extracts a road. `close_road` updates `ROAD` and deletes `PASSABLE`. Writes `Report`, close `Decision`, and a `reassess` task with `HANDOFF`. The origin is the `Unit` node in the graph. |
+| Dispatcher | Claims the open `reassess` task in one query, and only if the `Agent` node exists. Calls `route`. Writes a route `Decision` with `SUPERSEDES`, `BASED_ON` (the close decision and the report), `USED_EDGE`, and `AFFECTS`. |
 | Evacuation planner, Analyst | Not started. The image has `algo.maxFlow` and `algo.WCC` for them. |
 
 `explain(decision_id)` walks `BASED_ON` and `SUPERSEDES`. The returned narration is the stored explanation, not a model call.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from floodline.agents.planner import plan
 from floodline.config import T_CLOSE
-from floodline.network import UNIT_OSMID
+from floodline.network import UNIT_CALLSIGN, UNIT_OSMID
 from floodline.tools import (
     best_hospital,
     close_nearest_road,
@@ -12,6 +12,7 @@ from floodline.tools import (
     create_report,
     create_task,
     handoff,
+    unit_state,
     write_close_decision,
 )
 
@@ -47,7 +48,10 @@ def handle_report(graph, text: str, at: str = T_CLOSE) -> dict:
         at=at,
         explanation=explanation,
     )
-    hospital = best_hospital(graph, UNIT_OSMID)
+    unit = unit_state(graph)
+    origin = unit["osmid"] if unit else UNIT_OSMID
+    callsign = unit["callsign"] if unit else UNIT_CALLSIGN
+    hospital = best_hospital(graph, origin)
     scout_task = create_task(
         graph,
         kind="ingest_report",
@@ -56,7 +60,7 @@ def handle_report(graph, text: str, at: str = T_CLOSE) -> dict:
         created_at=at,
         road_id=closed["road_id"],
         road_name=closed["name"],
-        from_osmid=UNIT_OSMID,
+        from_osmid=origin,
         to_osmid=hospital["osmid"],
         report_id=report_id,
         close_decision_id=decision_id,
@@ -69,7 +73,7 @@ def handle_report(graph, text: str, at: str = T_CLOSE) -> dict:
         created_at=at,
         road_id=closed["road_id"],
         road_name=closed["name"],
-        from_osmid=UNIT_OSMID,
+        from_osmid=origin,
         to_osmid=hospital["osmid"],
         report_id=report_id,
         close_decision_id=decision_id,
@@ -83,5 +87,7 @@ def handle_report(graph, text: str, at: str = T_CLOSE) -> dict:
         "task_id": reassess,
         "closed": closed,
         "hospital": hospital,
+        "origin_osmid": origin,
+        "callsign": callsign,
         "explanation": explanation,
     }
