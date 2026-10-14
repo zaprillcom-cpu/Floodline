@@ -56,6 +56,7 @@ export function NetworkMap({ state }: { state: Snapshot }) {
   const closed = roads.filter((edge) => edge.status === "closed");
   const dense = state.nodes.length > 40;
   const osm = state.network?.source === "osm";
+  const cutOff = new Set((state.districts || []).filter((item) => item.cut_off).map((item) => item.name));
   const title = osm ? "L'Horta Sud — OpenStreetMap drive network" : "L'Horta Sud — synthetic network";
 
   const summary = after
@@ -129,15 +130,19 @@ export function NetworkMap({ state }: { state: Snapshot }) {
         const point = points.get(node.osmid);
         if (!point) return null;
         const unitHere = state.unit?.osmid === node.osmid;
-        const labeled = !dense || node.role !== "junction" || unitHere;
-        if (dense && node.role === "junction" && !unitHere) return null;
+        const isolated = cutOff.has(node.district);
+        const labeled = !dense || node.role !== "junction" || unitHere || isolated;
+        if (dense && node.role === "junction" && !unitHere && !isolated) return null;
         return (
           <g key={node.osmid}>
+            {isolated && (
+              <circle cx={point.x} cy={point.y} r={16} fill="#c026d3" opacity={0.35} />
+            )}
             <circle
               cx={point.x}
               cy={point.y}
               r={node.role === "junction" ? 5 : 8}
-              fill={node.role === "hospital" ? "#1d4ed8" : node.role === "shelter" ? "#7c3aed" : "#1a2a22"}
+              fill={isolated ? "#86198f" : node.role === "hospital" ? "#1d4ed8" : node.role === "shelter" ? "#7c3aed" : "#1a2a22"}
               stroke="#f8faf5"
               strokeWidth="2"
             />

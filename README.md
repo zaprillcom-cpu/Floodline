@@ -69,7 +69,7 @@ Remove FalkorDB and this slice stops working. The route is not computed in Pytho
 
 `:latest` (FalkorDB 6.x at the time of the design notes) does not ship A* or CCH yet. Those procedures are on the C engine in **v4.22.0**. The compose file pins `falkordb/falkordb:v4.22.0`. `algo.SPpaths` is the fallback if that image cannot answer a CCH or A* call.
 
-WCC and max-flow are on this image (`algo.WCC`, `algo.maxFlow`) and are not called yet. Cut-off detection and evacuation capacity are later slices. `PASSABLE` is already maintained so those queries can filter by relationship type.
+`algo.WCC` on `PASSABLE` marks a district cut off when it cannot reach a hospital. `algo.maxFlow` on `ROAD.capacity` is the evacuation rate from that district to shelters. On the synthetic network, closing the three roads out of Paiporta flips it to cut off and drops max-flow from 1200 to 0 veh/h. The saturated critical edge before that closure is the V-31 Paiporta bridge (600 of 600). Run `PYTHONPATH=backend python -m floodline.evac_demo`.
 
 ## Architecture
 
@@ -137,7 +137,7 @@ graph LR
   A -- CLAIMED --> T[Task]
 ```
 
-Reserved for later slices, not loaded yet: `Incident`, `FloodZone`, `Tick`, vector index on `Report.emb`, `algo.WCC` cut-off, `algo.maxFlow` evacuation capacity.
+The replay command loads `Tick` and one synthetic `Incident`. `algo.WCC` and `algo.maxFlow` run in the cut-off demo and at tick 2. Still not loaded: `FloodZone`, and a vector index on `Report.emb`.
 
 Full query text: [docs/queries.md](docs/queries.md).
 
@@ -186,7 +186,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3000. **Reset network** reloads the graph and the 215 s route. **File flood report** sends the text in the box (the default names the V-31 bridge). The map then shows the grey route and the green detour, and the panel quotes the Decision.
+Open http://localhost:3000. **Reset network** reloads the graph and the 215 s route. **File flood report** sends the text in the box (the default names the V-31 bridge). The map then shows the grey route and the green detour, and the panel quotes each Decision, including the explanation. **Cut off Paiporta** closes the roads that leave Paiporta, paints that district, and adds the WCC and max-flow decisions (1200 → 0 veh/h, with the saturated critical edge).
 
 Tests:
 
@@ -194,15 +194,39 @@ Tests:
 cd backend && pip install -r requirements-dev.txt && pytest
 ```
 
-`tests/test_scenario.py` skips unless something is already listening on `localhost:6379`.
+`tests/test_scenario.py`, `tests/test_coordination.py`, and `tests/test_resume.py` skip unless something is already listening on `localhost:6379`. The coordination tests check that `claim_task` takes the highest-priority open task, that a missing agent does not claim, and that Scout’s `HANDOFF` is what Dispatcher turns into a `Decision` with `BASED_ON` evidence. The resume test claims a task, stops before the Decision, and checks that a later `resume` finishes that same task.
+
+Crash and resume, as two processes:
+
+```bash
+PYTHONPATH=backend python -m floodline.resume_demo --crash
+PYTHONPATH=backend python -m floodline.resume_demo --resume
+```
+
+`--crash` is Scout plus a claim, then exit. `--resume` does not reload the network. It reads the claimed task and the Dispatcher heartbeat from FalkorDB and writes the route Decision.
+
+Replay the same morning on a fixed clock. Tick nodes are `seq` 0, 1, and 2. The incident id is `inc-seed-1`. Nothing in this command is random, and the times are reconstructed:
+
+```bash
+PYTHONPATH=backend python -m floodline.replay
+```
+
+```text
+TICK 0  2024-10-29T14:01:00Z  route 215 s
+TICK 1  2024-10-29T14:02:00Z  route 320 s  closed v31-paiporta-bridge
+TICK 2  2024-10-29T14:15:00Z  cut_off=True  maxFlow 1200 → 0 veh/h
+```
+
+Closing the bridge changes A-7's ETA and does not change evacuation throughput. Closing the roads out of Paiporta is what drops max-flow to 0.
 
 ## Agents
 
 | Agent | This slice |
 |---|---|
-| Scout | Stub planner extracts a road. `close_road` updates `ROAD` and deletes `PASSABLE`. Writes `Report`, close `Decision`, and a `reassess` task with `HANDOFF`. |
-| Dispatcher | Claims the open `reassess` task in one query. Calls `route` and `best_hospital`. Writes a route `Decision` with `SUPERSEDES`, `BASED_ON`, `USED_EDGE`, and `AFFECTS`. |
-| Evacuation planner, Analyst | Not started. The image has `algo.maxFlow` and `algo.WCC` for them. |
+| Scout | Stub planner extracts a road. `close_road` updates `ROAD` and deletes `PASSABLE`. Writes `Report`, close `Decision`, and a `reassess` task with `HANDOFF`. The origin is the `Unit` node in the graph. |
+| Dispatcher | Claims the open `reassess` task in one query, and only if the `Agent` node exists. Calls `route`. Writes a route `Decision` with `SUPERSEDES`, `BASED_ON` (the close decision and the report), `USED_EDGE`, and `AFFECTS`. A new process resumes a task left `claimed` and then claims anything still `open`. |
+| Analyst | `cut_off_areas` runs `algo.WCC` on `PASSABLE` and sets `District.cut_off`. |
+| Evacuation planner | `evac_capacity` runs `algo.maxFlow` from the district to shelters and names the saturated critical edge. |
 
 `explain(decision_id)` walks `BASED_ON` and `SUPERSEDES`. The returned narration is the stored explanation, not a model call.
 

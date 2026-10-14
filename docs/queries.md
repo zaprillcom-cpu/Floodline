@@ -153,7 +153,7 @@ ORDER BY dist_m ASC
 LIMIT 1
 ```
 
-If `point()` is unavailable, Scout falls back to a haversine scan of the ten intersections.
+If `point()` is unavailable, `snap_to_road` scans `Intersection` latitude and longitude in the graph, then the synthetic place table.
 
 ## Hospital choice
 
@@ -169,20 +169,45 @@ The Dispatcher routes to each row and keeps the smallest `travel_s`, breaking ti
 
 Atomic claim. FalkorDB serializes writes, so two Dispatchers cannot both observe `status = 'open'` and both claim:
 
+The agent is matched before the task is updated. A missing agent name leaves the task `open`.
+
 ```cypher
+MATCH (a:Agent {name: $agent})
 MATCH (t:Task {status: 'open', kind: $kind})
-WITH t
+WITH a, t
 ORDER BY t.priority DESC, t.created_at ASC
 LIMIT 1
-SET t.status = 'claimed', t.claimed_at = $now
-WITH t
-MATCH (a:Agent {name: $agent})
+SET t.status = 'claimed', t.claimed_at = $now, a.heartbeat_at = $now
 CREATE (a)-[:CLAIMED {at: $now}]->(t)
-SET a.heartbeat_at = $now
 RETURN t.id AS id, t.road_id AS road_id, t.road_name AS road_name,
        t.from_osmid AS from_osmid, t.to_osmid AS to_osmid,
        t.report_id AS report_id, t.close_decision_id AS close_decision_id
 ```
+
+A restart reads tasks this agent already claimed and did not finish:
+
+```cypher
+MATCH (:Agent {name: $agent})-[:CLAIMED]->(t:Task {status: 'claimed', kind: $kind})
+RETURN t.id, t.road_id, t.from_osmid, t.to_osmid, t.report_id, t.close_decision_id
+ORDER BY t.claimed_at
+```
+
+It finishes those, then claims any `reassess` task that is still `open`. `Agent.heartbeat_at` is set when the new process starts.
+
+## Replay clock
+
+`python -m floodline.replay` writes three `Tick` nodes and links each decision taken at that time:
+
+```cypher
+CREATE (:Tick {seq: $seq, t: $t, label: $label})
+```
+
+```cypher
+MATCH (tick:Tick {seq: $seq}), (d:Decision {at: $t})
+MERGE (d)-[:AT_TICK]->(tick)
+```
+
+The incident is a fixed id, not a random draw: `(:Incident {id: 'inc-seed-1', kind: 'medical', severity: 4, source: 'synthetic'})`.
 
 Scout writes a done `ingest_report` task and an open `reassess` task, then:
 
@@ -239,4 +264,49 @@ On the committed extract (2526 intersections, 4742 directed edges) a CCH route f
 
 ## Procedures confirmed on v4.22.0
 
-`CALL dbms.procedures()` on the pinned image includes `algo.AStar`, `algo.SPpaths`, `db.idx.cch.query`, `algo.WCC`, and `algo.maxFlow`. The corridor loader calls `db.idx.cch.query`. WCC and max-flow are not called yet. The running module version is `42200` (`4.22.0`). The image default `TIMEOUT` of 1000 ms is raised to 120000 ms at container start (`FALKORDB_ARGS`) and again from the Python client.
+`CALL dbms.procedures()` on the pinned image includes `algo.AStar`, `algo.SPpaths`, `db.idx.cch.query`, `algo.WCC`, and `algo.maxFlow`. The running module version is `42200` (`4.22.0`). The image default `TIMEOUT` of 1000 ms is raised to 120000 ms at container start (`FALKORDB_ARGS`) and again from the Python client.
+
+## Cut-off (`algo.WCC`)
+
+`PASSABLE` is the open-road mirror. WCC ignores edge properties, so a closure deletes `PASSABLE` instead of filtering on `status`.
+
+```cypher
+CALL algo.WCC({
+  nodeLabels: ['Intersection'],
+  relationshipTypes: ['PASSABLE']
+})
+YIELD node, componentId
+RETURN node.osmid AS osmid, componentId
+```
+
+A district is `cut_off = true` when none of its intersections share a component with a hospital's `ACCESS` intersection. On the synthetic graph, closing CV-400, Camí del Poyo, and the Massanassa link puts Paiporta north and south in their own component.
+
+Roads that leave a district:
+
+```cypher
+MATCH (inside:Intersection)-[:IN_DISTRICT]->(:District {name: $district})
+MATCH (inside)-[r:ROAD {status: 'open'}]-(outside:Intersection)
+WHERE NOT (outside)-[:IN_DISTRICT]->(:District {name: $district})
+RETURN DISTINCT r.road_id AS road_id, r.name AS name
+```
+
+## Evacuation capacity (`algo.maxFlow`)
+
+Sources are the district's intersections. Sinks are shelter intersections. Capacity is `ROAD.capacity` (0 after a closure).
+
+```cypher
+MATCH (d:District {name: $district})<-[:IN_DISTRICT]-(src:Intersection)
+WITH collect(src) AS sources
+MATCH (:Shelter)-[:ACCESS]->(sink:Intersection)
+WITH sources, collect(DISTINCT sink) AS targets
+CALL algo.maxFlow({
+  sourceNodes: sources,
+  targetNodes: targets,
+  relationshipTypes: ['ROAD'],
+  capacityProperty: 'capacity'
+})
+YIELD edges, edgeFlows, maxFlow
+RETURN maxFlow, edges, edgeFlows
+```
+
+On the synthetic network this is 1200 veh/h before the corridor closure and 0 after. The critical edge is the saturated edge with the largest flow: V-31 Paiporta bridge, 600 of capacity 600.

@@ -7,8 +7,11 @@ from floodline.routing import route
 from floodline.tools import (
     active_route_decision,
     claim_task,
+    claimed_tasks,
     explain,
     finish_task,
+    touch_heartbeat,
+    unit_state,
     write_route_decision,
 )
 
@@ -28,13 +31,11 @@ def _algo_label(algo: str) -> str:
     }.get(algo, algo)
 
 
-def reroute(graph, at: str = T_CLOSE) -> dict:
-    task = claim_task(graph, "Dispatcher", "reassess", at)
-    if task is None:
-        return {"claimed": False}
-
+def _complete(graph, task: dict, at: str, *, resumed: bool) -> dict:
     previous = active_route_decision(graph)
     found = route(graph, task["from_osmid"], task["to_osmid"])
+    unit = unit_state(graph)
+    callsign = unit["callsign"] if unit else "A-7"
     before_text = "no previous route"
     delta = ""
     if previous:
@@ -42,9 +43,11 @@ def reroute(graph, at: str = T_CLOSE) -> dict:
             f"{_fmt(previous['travel_s'])} via {' → '.join(previous['names'])}"
         )
         delta = f" Delta {found.travel_s - previous['travel_s']:+d} s."
+    origin = "resumed from the claimed task in the graph" if resumed else "claimed the reassess task"
     explanation = (
-        f"Unit A-7 rerouted to the nearest open hospital because "
+        f"Unit {callsign} rerouted to the nearest open hospital because "
         f"{task['road_name']} closed at {at}. "
+        f"Dispatcher {origin}. "
         f"Previous ETA {before_text}. "
         f"New ETA {_fmt(found.travel_s)} via {' → '.join(found.names)}."
         f"{delta} "
@@ -60,10 +63,12 @@ def reroute(graph, at: str = T_CLOSE) -> dict:
         explanation=explanation,
         previous_id=previous["id"] if previous else None,
         evidence_ids=evidence,
+        callsign=callsign,
     )
     finish_task(graph, task["id"], "done")
     return {
         "claimed": True,
+        "resumed": resumed,
         "task_id": task["id"],
         "decision_id": decision_id,
         "route": found.as_dict(),
@@ -71,3 +76,27 @@ def reroute(graph, at: str = T_CLOSE) -> dict:
         "explanation": explanation,
         "evidence": explain(graph, decision_id),
     }
+
+
+def reroute(graph, at: str = T_CLOSE) -> dict:
+    task = claim_task(graph, "Dispatcher", "reassess", at)
+    if task is None:
+        return {"claimed": False}
+    return _complete(graph, task, at, resumed=False)
+
+
+def resume(graph, at: str = T_CLOSE) -> dict:
+    """Finish tasks this Dispatcher already claimed, then claim any that are still open.
+
+    Safe to call in a new process. The task and the CLAIMED edge are the memory.
+    """
+    touch_heartbeat(graph, "Dispatcher", at)
+    finished = []
+    for task in claimed_tasks(graph, "Dispatcher", "reassess"):
+        finished.append(_complete(graph, task, at, resumed=True))
+    while True:
+        task = claim_task(graph, "Dispatcher", "reassess", at)
+        if task is None:
+            break
+        finished.append(_complete(graph, task, at, resumed=False))
+    return {"heartbeat_at": at, "finished": finished}

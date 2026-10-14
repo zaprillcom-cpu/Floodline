@@ -217,6 +217,24 @@ def _link_used_edges(graph, decision_id: str, osmids: list[int]) -> None:
         )
 
 
+def unit_state(graph) -> dict | None:
+    """The ambulance the agents are routing. Read from the graph, not from a constant."""
+    found = rows(
+        graph.query(
+            """
+            MATCH (u:Unit)-[:ACCESS]->(i:Intersection)
+            RETURN u.callsign AS callsign, u.status AS status, i.osmid AS osmid
+            ORDER BY u.callsign
+            LIMIT 1
+            """
+        )
+    )
+    if not found:
+        return None
+    callsign, status, osmid = found[0]
+    return {"callsign": callsign, "status": status, "osmid": int(osmid)}
+
+
 def write_route_decision(
     graph,
     found: Route,
@@ -226,6 +244,7 @@ def write_route_decision(
     previous_id: str | None = None,
     evidence_ids: list[str] | None = None,
     agent: str = "Dispatcher",
+    callsign: str = "A-7",
 ) -> str:
     decision_id = _id("dec")
     seq = next_seq(graph)
@@ -262,10 +281,10 @@ def write_route_decision(
         MATCH (a:Agent {name: $agent}), (d:Decision {id: $id})
         CREATE (a)-[:MADE]->(d)
         WITH d
-        MATCH (u:Unit {callsign: 'A-7'})
+        MATCH (u:Unit {callsign: $callsign})
         CREATE (d)-[:AFFECTS]->(u)
         """,
-        {"agent": agent, "id": decision_id},
+        {"agent": agent, "id": decision_id, "callsign": callsign},
     )
     _link_used_edges(graph, decision_id, found.osmids)
     if previous_id:
@@ -403,7 +422,11 @@ def claim_task(graph, agent: str, kind: str, now: str) -> dict | None:
     found = rows(result)
     if not found:
         return None
-    task_id, road_id, road_name, from_osmid, to_osmid, report_id, close_decision_id = found[0]
+    return _task_row(found[0])
+
+
+def _task_row(found) -> dict:
+    task_id, road_id, road_name, from_osmid, to_osmid, report_id, close_decision_id = found
     return {
         "id": task_id,
         "road_id": road_id,
@@ -413,6 +436,19 @@ def claim_task(graph, agent: str, kind: str, now: str) -> dict | None:
         "report_id": report_id,
         "close_decision_id": close_decision_id,
     }
+
+
+def claimed_tasks(graph, agent: str, kind: str) -> list[dict]:
+    """Tasks this agent already claimed and has not finished. A restart reads these back."""
+    found = rows(graph.query(cypher.CLAIMED_TASKS, {"agent": agent, "kind": kind}))
+    return [_task_row(row) for row in found]
+
+
+def touch_heartbeat(graph, agent: str, now: str) -> None:
+    graph.query(
+        "MATCH (a:Agent {name: $agent}) SET a.heartbeat_at = $now",
+        {"agent": agent, "now": now},
+    )
 
 
 def finish_task(graph, task_id: str, status: str = "done") -> None:

@@ -89,16 +89,16 @@ ORDER BY dist_m ASC
 LIMIT 1
 """
 
+# The agent is matched first. If that name is missing, the task stays open.
+# FalkorDB serializes writes, so two callers cannot both claim the same open task.
 CLAIM_TASK = """
+MATCH (a:Agent {name: $agent})
 MATCH (t:Task {status: 'open', kind: $kind})
-WITH t
+WITH a, t
 ORDER BY t.priority DESC, t.created_at ASC
 LIMIT 1
-SET t.status = 'claimed', t.claimed_at = $now
-WITH t
-MATCH (a:Agent {name: $agent})
+SET t.status = 'claimed', t.claimed_at = $now, a.heartbeat_at = $now
 CREATE (a)-[:CLAIMED {at: $now}]->(t)
-SET a.heartbeat_at = $now
 RETURN t.id AS id,
        t.road_id AS road_id,
        t.road_name AS road_name,
@@ -106,6 +106,49 @@ RETURN t.id AS id,
        t.to_osmid AS to_osmid,
        t.report_id AS report_id,
        t.close_decision_id AS close_decision_id
+"""
+
+WCC_PASSABLE = """
+CALL algo.WCC({
+  nodeLabels: ['Intersection'],
+  relationshipTypes: ['PASSABLE']
+})
+YIELD node, componentId
+RETURN node.osmid AS osmid, componentId
+"""
+
+MAX_FLOW = """
+MATCH (d:District {name: $district})<-[:IN_DISTRICT]-(src:Intersection)
+WITH collect(src) AS sources
+MATCH (:Shelter)-[:ACCESS]->(sink:Intersection)
+WITH sources, collect(DISTINCT sink) AS targets
+CALL algo.maxFlow({
+  sourceNodes: sources,
+  targetNodes: targets,
+  relationshipTypes: ['ROAD'],
+  capacityProperty: 'capacity'
+})
+YIELD edges, edgeFlows, maxFlow
+RETURN maxFlow, edges, edgeFlows
+"""
+
+DISTRICT_EXITS = """
+MATCH (inside:Intersection)-[:IN_DISTRICT]->(:District {name: $district})
+MATCH (inside)-[r:ROAD {status: 'open'}]-(outside:Intersection)
+WHERE NOT (outside)-[:IN_DISTRICT]->(:District {name: $district})
+RETURN DISTINCT r.road_id AS road_id, r.name AS name
+"""
+
+CLAIMED_TASKS = """
+MATCH (:Agent {name: $agent})-[:CLAIMED]->(t:Task {status: 'claimed', kind: $kind})
+RETURN t.id AS id,
+       t.road_id AS road_id,
+       t.road_name AS road_name,
+       t.from_osmid AS from_osmid,
+       t.to_osmid AS to_osmid,
+       t.report_id AS report_id,
+       t.close_decision_id AS close_decision_id
+ORDER BY t.claimed_at
 """
 
 EXPLAIN_DECISION = """

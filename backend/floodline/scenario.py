@@ -137,6 +137,25 @@ def snapshot(settings: Settings | None = None) -> dict:
             )
         )
     ]
+    districts = []
+    for name, population, cut_off, component_id in rows(
+        graph.query(
+            """
+            MATCH (d:District)
+            RETURN d.name, d.population, d.cut_off, d.component_id
+            ORDER BY d.name
+            """
+        )
+    ):
+        districts.append(
+            {
+                "name": name,
+                "population": int(population or 0),
+                "cut_off": bool(cut_off),
+                "component_id": None if component_id in (None, -1) else int(component_id),
+            }
+        )
+
     unit_rows = rows(
         graph.query(
             """
@@ -267,6 +286,7 @@ def snapshot(settings: Settings | None = None) -> dict:
         "nodes": nodes,
         "edges": edges,
         "hospitals": hospitals,
+        "districts": districts,
         "unit": unit,
         "closed_roads": closed,
         "routes": routes,
