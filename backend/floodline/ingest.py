@@ -215,6 +215,15 @@ def reset_and_load(settings: Settings | None = None, probe_src: int | None = Non
     intersections = int(rows(graph.query("MATCH (i:Intersection) RETURN count(i)"))[0][0])
     road_edges = int(rows(graph.query("MATCH ()-[r:ROAD]->() RETURN count(r)"))[0][0])
     passable = int(rows(graph.query("MATCH ()-[p:PASSABLE]->() RETURN count(p)"))[0][0])
+    graph.query(
+        """
+        MERGE (m:Meta {key: 'network'})
+        SET m.source = 'synthetic',
+            m.bbox = '',
+            m.attribution = 'Synthetic schematic. Not an OpenStreetMap extract.',
+            m.district_method = 'hand'
+        """
+    )
     return {
         "graph": cfg.graph,
         "intersections": int(intersections),

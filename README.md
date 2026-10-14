@@ -2,7 +2,7 @@
 
 Disaster-response routing over a whole road network, not one car at a time. A citizen report closes a bridge in the graph. An ambulance’s route is recomputed there, and the reason is stored next to the edges that caused it.
 
-This is the **first slice** for [WeMakeDevs × FalkorDB Graph Hacks](https://github.com/zaprillcom-cpu/Floodline): one synthetic Valencia network, one closure, one reroute, on a map.
+This is a solo entry for [WeMakeDevs × FalkorDB Graph Hacks](https://github.com/zaprillcom-cpu/Floodline). The city graph is an OpenStreetMap drive network for the Valencia flood corridor. A 10-node synthetic network remains as the offline fallback and as the small map demo.
 
 **Tracks:** Track 1 — Agents That Act on Connected Data (primary). Track 2 — Agent Memory & Coordination.
 
@@ -11,12 +11,49 @@ Live deployment and the demo video are not in this slice. Local setup below is t
 ## What this slice does
 
 1. `docker compose up` starts **FalkorDB v4.22.0** (not `:latest`).
-2. A loader writes 10 `Intersection` nodes, directed `ROAD` edges (`travel_s`, `capacity`), and `PASSABLE` mirrors.
+2. The synthetic loader writes 10 `Intersection` nodes, directed `ROAD` edges (`travel_s`, `capacity`), and `PASSABLE` mirrors. The OSM loader is the next section.
 3. Scout closes the V-31 Paiporta bridge: `travel_s = 1000000000`, `capacity = 0`, and the `PASSABLE` edges for that road are deleted.
 4. Dispatcher recomputes A-7’s route. Before: **215 s** across the bridge. After: **320 s** via Alfafar and Sedaví. The `Decision` node says why.
 5. A Next.js map draws the old path (grey dash) and the new path (green).
 
 Checked on v4.22.0: `db.idx.cch.query`, `algo.AStar`, and `algo.SPpaths` all return 215 s before the closure and 320 s after. The running router is **CCH**. If CCH or A* is missing or still walks a closed edge, routing falls through to `algo.SPpaths`.
+
+## Valencia drive network
+
+`scripts/load_valencia.sh` loads a real OSMnx drive graph into FalkorDB and proves that closing one road changes a CCH route.
+
+| | |
+|---|---|
+| Tool | OSMnx 2.1.1, `network_type='drive'`, simplified |
+| BBox (west, south, east, north) | `-0.430, 39.415, -0.372, 39.458` |
+| Coverage | Paiporta, Alfafar, Sedaví, Benetússer, and Hospital Doctor Peset. About 5.0 km by 4.8 km. |
+| Intersections | 2526 |
+| Directed `ROAD` edges | 4742, each mirrored by `PASSABLE` while open |
+| Districts | Nearest town centroid, not an official boundary. Paiporta 654, Alfafar 259, Sedaví 504, Benetússer 365, Valencia 744. Populations are synthetic. |
+| Extract | `data/osm/valencia_corridor.json` (ODbL, © OpenStreetMap contributors). `--refresh` re-downloads from Overpass. |
+
+Checked on FalkorDB **4.22.0** (`MODULE LIST` reports version `42200`, and the container log says `Starting up FalkorDB version 4.22.0`):
+
+```text
+BEFORE  7 min 47 s (467 s)  algo=cch  hops=66
+CLOSED  Carretera de Benetússer
+AFTER   8 min 20 s (500 s)  algo=cch  hops=74
+  delta: +33 s
+DEMO OK
+```
+
+A-7 is snapped to an intersection in Paiporta (about 46 m from the seed point). The destination is the intersection nearest Hospital Doctor Peset (about 206 m). The closure is weight-only: `travel_s = 1000000000`, `capacity = 0`, and that edge’s `PASSABLE` mirror is deleted. The `ROAD` edge stays, so the CCH index only re-customizes the weight. The new path does not use the closed edge.
+
+If the extract is missing and Overpass cannot be reached, the script runs the synthetic demo and says so.
+
+```bash
+docker compose up -d
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r backend/requirements.txt
+scripts/load_valencia.sh
+```
+
+`docker compose` sets `FALKORDB_ARGS` so the query timeout is 120 s and the result-set cap is 1,000,000. The image default timeout is 1 s, which is too small for this graph. The Python client sets the same values on connect.
 
 ## Why FalkorDB is essential
 
@@ -56,14 +93,14 @@ The planner (`backend/floodline/agents/planner.py`) is a deterministic stub. It 
 
 ## Graph data model
 
-Loaded now:
+The synthetic demo and the OSM load use the same labels. Counts below are the synthetic demo unless noted. The OSM extract has 2526 intersections, and `ROAD` also stores `highway` and `base_capacity`.
 
 | Label | Properties | Notes |
 |---|---|---|
-| `Intersection` | `osmid`, `name`, `lat`, `lon`, `loc` (point), `district`, `role` | 10 nodes. `role` is `junction`, `hospital`, `shelter`, or `depot`. |
-| `Hospital` | `id`, `name`, `beds_total`, `beds_free`, `er_open` | Doctor Peset and La Fe. Bed counts are synthetic. |
-| `Shelter` | `id`, `name`, `capacity`, `occupancy` | Alfafar. Synthetic. |
-| `District` | `name`, `population`, `zone_id`, `population_source` | Paiporta. Population is synthetic. |
+| `Intersection` | `osmid`, `name`, `lat`, `lon`, `loc` (point), `district`, `role` | 10 nodes in the synthetic demo, 2526 in the OSM extract. `role` is `junction`, `hospital`, `shelter`, or `depot`. |
+| `Hospital` | `id`, `name`, `beds_total`, `beds_free`, `er_open` | Doctor Peset and La Fe. Bed counts are synthetic. Snapped onto OSM intersections in the corridor load. |
+| `Shelter` | `id`, `name`, `capacity`, `occupancy` | Alfafar in the synthetic demo. The OSM load also adds a Benetússer shelter. Synthetic capacity. |
+| `District` | `name`, `population`, `zone_id`, `population_source`, `cut_off` | Synthetic demo: Paiporta. OSM load: Paiporta, Alfafar, Sedaví, Benetússer, Valencia (nearest centroid). Population is synthetic. |
 | `Unit` | `callsign`, `status`, `lat`, `lon` | Ambulance `A-7`, status `transport`. |
 | `Report` | `id`, `text`, `received_at`, `channel`, `confidence` | The citizen report Scout ingests. |
 | `Agent` | `name`, `role`, `heartbeat_at` | `Scout`, `Dispatcher`. |
@@ -73,7 +110,7 @@ Loaded now:
 
 | Relationship | From → to | Properties |
 |---|---|---|
-| `ROAD` | Intersection → Intersection | `road_id`, `name`, `osm_way` (`synthetic/…`), `length_m`, `speed_kph`, `base_travel_s`, `travel_s`, `capacity`, `status`, and on closure `closed_at`, `closed_by` |
+| `ROAD` | Intersection → Intersection | `road_id`, `name`, `osm_way` (`synthetic/…` or an OSM way id), `length_m`, `speed_kph`, `base_travel_s`, `travel_s`, `capacity`, `status`, and on closure `closed_at`, `closed_by`. OSM edges also have `highway` and `base_capacity`. |
 | `PASSABLE` | Intersection → Intersection | `road_id`. Present only while the road is open. |
 | `ACCESS` | Hospital, Shelter, or Unit → Intersection | `dist_m` |
 | `IN_DISTRICT` | Intersection → District | |
@@ -171,7 +208,7 @@ cd backend && pip install -r requirements-dev.txt && pytest
 
 ## Data and licenses
 
-Synthetic network only. Place names are real; geometry, speeds, capacities, beds, the ambulance, and the clock are not an OSM extract and are not the real DANA timeline. Details: [DATA_LICENSES.md](DATA_LICENSES.md).
+The corridor graph is derived from OpenStreetMap (ODbL). The 10-node demo is synthetic. Beds, shelters, the ambulance, district populations, and the clock are synthetic in both. Details: [DATA_LICENSES.md](DATA_LICENSES.md).
 
 The October 2024 DANA floods in Valencia killed more than 200 people. Floodline is a coordination exercise. It does not depict victims.
 

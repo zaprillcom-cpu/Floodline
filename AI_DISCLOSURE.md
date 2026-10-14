@@ -4,7 +4,7 @@ Floodline is a solo entry to WeMakeDevs × FalkorDB Graph Hacks (Tracks 1 and 2)
 
 ## Tools used to build this repository
 
-- **Cursor Grok 4.7**, as a cloud coding agent, wrote this first slice: the FalkorDB loader, Scout and Dispatcher tool wrappers, the FastAPI service, the Next.js map, tests, and these docs.
+- **Cursor Grok 4.7**, as a cloud coding agent, wrote the FalkorDB loader, the OSMnx Valencia corridor ingest, Scout and Dispatcher tool wrappers, the FastAPI service, the Next.js map, tests, and these docs.
 - The design notes this code follows (`PLAN.md` and the end-to-end plan) were written before this implementation. They are not committed here; the graph model in the README is the part this slice actually loads.
 
 The author of the entry is responsible for reviewing, running, and explaining the graph model, the Cypher, and the architecture.

@@ -15,6 +15,12 @@ export type Snapshot = {
     chosen: string | null;
     available: Record<string, { ok?: boolean; travel_s?: number; error?: string }>;
   };
+  network?: {
+    source: string;
+    bbox?: { west: number; south: number; east: number; north: number } | null;
+    attribution?: string;
+    district_method?: string;
+  };
   counts?: { intersections: number; road_edges: number; passable: number };
   nodes: Array<{
     osmid: number;

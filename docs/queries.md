@@ -210,6 +210,33 @@ RETURN d.explanation AS explanation, d.algo AS algo, prev.id AS previous_id,
 
 The narrator in this slice returns that explanation unchanged. A later slice can hand the same payload to a model.
 
+## Valencia OSM bulk load
+
+`backend/floodline/bulk.py` inserts the OSMnx extract in batches. The shape matches the synthetic roads: directed `ROAD` (`travel_s`, `base_travel_s`, `capacity`, `base_capacity`, `status`) and a `PASSABLE` mirror. `road_id` is shared by the two directions of one OSM way, so `close_road` closes both. One-way segments get their own id.
+
+```cypher
+UNWIND $rows AS row
+MATCH (a:Intersection {osmid: row.src}), (b:Intersection {osmid: row.dst})
+CREATE (a)-[:ROAD {
+  road_id: row.road_id,
+  name: row.name,
+  osm_way: row.osm_way,
+  highway: row.highway,
+  length_m: row.length_m,
+  speed_kph: row.speed_kph,
+  base_travel_s: row.travel_s,
+  travel_s: row.travel_s,
+  base_capacity: row.capacity,
+  capacity: row.capacity,
+  status: 'open'
+}]->(b)
+CREATE (a)-[:PASSABLE {road_id: row.road_id}]->(b)
+```
+
+The same indexes as the synthetic load are created after the batches, including `CREATE CCH INDEX FOR ()-[e:ROAD]->() ON (e.travel_s)`. `PASSABLE` is not part of that index.
+
+On the committed extract (2526 intersections, 4742 directed edges) a CCH route from the Paiporta snap of A-7 to the Doctor Peset snap is 467 s. Closing Carretera de Benetússer makes the next CCH route 500 s and drops one `PASSABLE` edge.
+
 ## Procedures confirmed on v4.22.0
 
-`CALL dbms.procedures()` on the pinned image includes `algo.AStar`, `algo.SPpaths`, `db.idx.cch.query`, `algo.WCC`, and `algo.maxFlow`. WCC and max-flow are not called by this slice.
+`CALL dbms.procedures()` on the pinned image includes `algo.AStar`, `algo.SPpaths`, `db.idx.cch.query`, `algo.WCC`, and `algo.maxFlow`. The corridor loader calls `db.idx.cch.query`. WCC and max-flow are not called yet. The running module version is `42200` (`4.22.0`). The image default `TIMEOUT` of 1000 ms is raised to 120000 ms at container start (`FALKORDB_ARGS`) and again from the Python client.

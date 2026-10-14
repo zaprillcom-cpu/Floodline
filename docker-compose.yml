@@ -4,6 +4,10 @@ services:
   falkordb:
     image: falkordb/falkordb:v4.22.0
     container_name: floodline-falkordb
+    # The image default TIMEOUT is 1000 ms. CCH build and city-scale queries need longer.
+    # RESULTSET_SIZE default (10000) is tight once the Valencia drive graph is loaded.
+    environment:
+      FALKORDB_ARGS: ${FALKORDB_ARGS:-TIMEOUT 120000 RESULTSET_SIZE 1000000}
     ports:
       - "${FALKORDB_PORT:-6379}:6379"
     volumes:

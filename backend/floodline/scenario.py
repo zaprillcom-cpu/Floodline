@@ -211,6 +211,31 @@ def snapshot(settings: Settings | None = None) -> dict:
             available = json.loads(available)
         router = {"chosen": chosen, "available": available or {}}
 
+    network_rows = rows(
+        graph.query(
+            """
+            MATCH (m:Meta {key: 'network'})
+            RETURN m.source, m.bbox, m.attribution, m.district_method
+            """
+        )
+    )
+    network = {"source": "unknown", "bbox": None, "attribution": "", "district_method": ""}
+    if network_rows:
+        source, bbox, attribution, district_method = network_rows[0]
+        if isinstance(bbox, str) and bbox:
+            try:
+                bbox = json.loads(bbox)
+            except json.JSONDecodeError:
+                bbox = None
+        elif not bbox:
+            bbox = None
+        network = {
+            "source": source or "unknown",
+            "bbox": bbox,
+            "attribution": attribution or "",
+            "district_method": district_method or "",
+        }
+
     closed = sorted({edge["road_id"] for edge in edges if edge["status"] == "closed"})
     narrative = {
         "closure": next(
@@ -233,6 +258,7 @@ def snapshot(settings: Settings | None = None) -> dict:
             "label": "reconstructed",
         },
         "router": router,
+        "network": network,
         "counts": {
             "intersections": len(nodes),
             "road_edges": len(edges),
