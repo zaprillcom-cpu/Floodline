@@ -136,6 +136,7 @@ textarea {
 
 .actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin: 10px 0 14px;
 }
@@ -210,7 +211,20 @@ footer.note {
   padding-left: 18px;
 }
 
-.path-list li { margin: 4px 0; }
+.path-list li { margin: 8px 0; }
+.path-list p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.cutoff {
+  background: #3b1248;
+  color: #fae8ff;
+  border-radius: 8px;
+  padding: 10px;
+  margin: 0 0 10px;
+}
 
 @media (max-width: 900px) {
   .app { grid-template-columns: 1fr; }

@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from floodline.analysis import cut_off_areas, evac_capacity
+from floodline.analysis import cut_off_areas, evac_capacity, prove_cutoff, record_corridor
 from floodline.config import Settings
 from floodline.db import get_graph
 from floodline.network import DEMO_REPORT
@@ -57,6 +57,29 @@ def reset() -> dict:
 @app.post("/api/scenario/report")
 def report(body: ReportIn) -> dict:
     return _guard(lambda: file_report(body.text))
+
+
+@app.post("/api/scenario/corridor")
+def corridor() -> dict:
+    """Close the roads leaving Paiporta, then return the map snapshot."""
+
+    def run():
+        graph = get_graph()
+        result = prove_cutoff(graph)
+        record_corridor(graph, result)
+        state = snapshot()
+        critical = result["before"]["evac"]["critical_edge"]
+        state["corridor"] = {
+            "district": result["district"],
+            "before_max_flow": result["before"]["evac"]["max_flow"],
+            "after_max_flow": result["after"]["evac"]["max_flow"],
+            "critical_edge": None if critical is None else critical["name"],
+            "critical_flow": None if critical is None else critical["flow"],
+            "closed": [item["name"] for item in result["closed"]],
+        }
+        return state
+
+    return _guard(run)
 
 
 @app.get("/api/analysis/cutoff")

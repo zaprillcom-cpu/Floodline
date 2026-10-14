@@ -35,6 +35,22 @@ def test_open_network_can_reach_a_hospital():
     assert evac["critical_edge"]["flow"] == 600
 
 
+def test_snapshot_lists_paiporta_as_cut_off():
+    from floodline.analysis import record_corridor
+    from floodline.scenario import snapshot
+
+    reset_scenario()
+    graph = get_graph()
+    result = prove_cutoff(graph)
+    record_corridor(graph, result)
+    state = snapshot()
+    paiporta = next(item for item in state["districts"] if item["name"] == "Paiporta")
+    assert paiporta["cut_off"] is True
+    kinds = [item["kind"] for item in state["decisions"]]
+    assert "alert" in kinds
+    assert "evac_plan" in kinds
+
+
 def test_closing_paiporta_exits_cuts_the_district_off():
     reset_scenario()
     result = prove_cutoff(get_graph())

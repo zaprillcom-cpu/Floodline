@@ -7,10 +7,12 @@ to 0 and deletes PASSABLE, so both answers move together without deleting ROAD.
 
 from __future__ import annotations
 
+import uuid
+
 from floodline import cypher
 from floodline.config import T_CLOSE
 from floodline.db import rows
-from floodline.tools import close_road
+from floodline.tools import close_road, next_seq
 
 
 def cut_off_areas(graph, at: str = T_CLOSE) -> list[dict]:
@@ -147,6 +149,96 @@ def prove_cutoff(graph, district: str = "Paiporta", at: str = T_CLOSE) -> dict:
             "evac": after_evac,
         },
     }
+
+
+def record_corridor(graph, result: dict, at: str = T_CLOSE) -> None:
+    """Write the WCC and max-flow results as Decision nodes the map can list."""
+    graph.query(
+        """
+        MERGE (a:Agent {name: 'Analyst'})
+        SET a.role = 'connectivity', a.heartbeat_at = $at
+        """,
+        {"at": at},
+    )
+    district = result["district"]
+    before = next(item for item in result["before"]["areas"] if item["name"] == district)
+    after = next(item for item in result["after"]["areas"] if item["name"] == district)
+    names = ", ".join(item["name"] for item in result["closed"])
+    critical = result["before"]["evac"]["critical_edge"]
+    critical_text = "none"
+    if critical:
+        critical_text = (
+            f"{critical['name']} ({critical['flow']} of {critical['capacity']} veh/h, saturated)"
+        )
+    _write_decision(
+        graph,
+        at=at,
+        kind="alert",
+        algo="algo.WCC",
+        summary=f"{district} cut off",
+        explanation=(
+            f"Analyst ran algo.WCC on PASSABLE. Before the closure, {district} "
+            f"was component {before['component_id']} and could reach a hospital. "
+            f"Closing {names} moved it to component {after['component_id']}, "
+            f"which contains no hospital, so {district} is cut off."
+        ),
+        district=district,
+    )
+    _write_decision(
+        graph,
+        at=at,
+        kind="evac_plan",
+        algo="algo.maxFlow",
+        summary=(
+            f"maxFlow {result['before']['evac']['max_flow']} → "
+            f"{result['after']['evac']['max_flow']} veh/h"
+        ),
+        explanation=(
+            f"Evacuation capacity from {district} to shelters was "
+            f"{result['before']['evac']['max_flow']} veh/h. "
+            f"The critical edge was {critical_text}. "
+            f"After the corridor closure it is {result['after']['evac']['max_flow']} veh/h."
+        ),
+        district=district,
+    )
+
+
+def _write_decision(graph, *, at, kind, algo, summary, explanation, district) -> None:
+    decision_id = f"dec-{uuid.uuid4().hex[:10]}"
+    seq = next_seq(graph)
+    graph.query(
+        """
+        CREATE (:Decision {
+          id: $id,
+          seq: $seq,
+          at: $at,
+          kind: $kind,
+          algo: $algo,
+          explanation: $explanation,
+          result_summary: $summary,
+          superseded: false
+        })
+        """,
+        {
+            "id": decision_id,
+            "seq": seq,
+            "at": at,
+            "kind": kind,
+            "algo": algo,
+            "explanation": explanation,
+            "summary": summary,
+        },
+    )
+    graph.query(
+        """
+        MATCH (a:Agent {name: 'Analyst'}), (d:Decision {id: $id})
+        CREATE (a)-[:MADE]->(d)
+        WITH d
+        MATCH (dist:District {name: $district})
+        CREATE (d)-[:AFFECTS]->(dist)
+        """,
+        {"id": decision_id, "district": district},
+    )
 
 
 def assert_paiporta_cutoff(result: dict) -> None:

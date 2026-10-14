@@ -67,6 +67,7 @@ export function Console() {
   const after = state?.routes?.after;
   const closed = (state?.closed_roads || []).length > 0;
   const router = state?.router?.chosen ?? "…";
+  const cutOff = (state?.districts || []).filter((district) => district.cut_off);
 
   return (
     <main className="app">
@@ -97,6 +98,7 @@ export function Console() {
           <span><i className="swatch" style={{ background: "#4b5563" }} /> route before</span>
           <span><i className="swatch" style={{ background: "#157a3a" }} /> route after</span>
           <span><i className="swatch" style={{ background: "#c2410c" }} /> closed</span>
+          <span><i className="swatch" style={{ background: "#c026d3" }} /> cut off</span>
         </div>
       </section>
 
@@ -126,12 +128,31 @@ export function Console() {
           <button
             type="button"
             className="secondary"
+            onClick={() => call("/api/scenario/corridor", { method: "POST" })}
+            disabled={busy || !state?.loaded || cutOff.some((district) => district.name === "Paiporta")}
+          >
+            Cut off Paiporta
+          </button>
+          <button
+            type="button"
+            className="secondary"
             onClick={() => call("/api/scenario/reset", { method: "POST" })}
             disabled={busy}
           >
             Reset network
           </button>
         </div>
+        {cutOff.length > 0 && (
+          <p className="cutoff">
+            Cut off: {cutOff.map((district) => district.name).join(", ")}. WCC on PASSABLE found no hospital in that component.
+          </p>
+        )}
+        {state?.corridor && (
+          <p>
+            maxFlow {state.corridor.before_max_flow} → {state.corridor.after_max_flow} veh/h.
+            Critical edge: {state.corridor.critical_edge} ({state.corridor.critical_flow} veh/h).
+          </p>
+        )}
         <div className="narrative" aria-live="polite">
           {before && (
             <p>
@@ -150,8 +171,11 @@ export function Console() {
           <ol className="path-list">
             {state.decisions.map((decision) => (
               <li key={decision.id}>
-                {decision.agent} · {decision.kind}
-                {decision.superseded ? " (superseded)" : ""} · {decision.summary}
+                <div>
+                  {decision.agent} · {decision.kind}
+                  {decision.superseded ? " (superseded)" : ""} · {decision.summary}
+                </div>
+                {decision.explanation && <p>{decision.explanation}</p>}
               </li>
             ))}
           </ol>

@@ -40,6 +40,20 @@ export type Snapshot = {
     capacity: number;
     status: string;
   }>;
+  districts?: Array<{
+    name: string;
+    population: number;
+    cut_off: boolean;
+    component_id: number | null;
+  }>;
+  corridor?: {
+    district: string;
+    before_max_flow: number;
+    after_max_flow: number;
+    critical_edge: string | null;
+    critical_flow: number | null;
+    closed: string[];
+  };
   hospitals?: Array<{
     id: string;
     name: string;

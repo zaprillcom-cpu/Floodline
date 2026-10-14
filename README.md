@@ -186,7 +186,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3000. **Reset network** reloads the graph and the 215 s route. **File flood report** sends the text in the box (the default names the V-31 bridge). The map then shows the grey route and the green detour, and the panel quotes the Decision.
+Open http://localhost:3000. **Reset network** reloads the graph and the 215 s route. **File flood report** sends the text in the box (the default names the V-31 bridge). The map then shows the grey route and the green detour, and the panel quotes each Decision, including the explanation. **Cut off Paiporta** closes the roads that leave Paiporta, paints that district, and adds the WCC and max-flow decisions (1200 → 0 veh/h, with the saturated critical edge).
 
 Tests:
 
