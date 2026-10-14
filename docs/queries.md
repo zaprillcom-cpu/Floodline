@@ -194,6 +194,21 @@ ORDER BY t.claimed_at
 
 It finishes those, then claims any `reassess` task that is still `open`. `Agent.heartbeat_at` is set when the new process starts.
 
+## Replay clock
+
+`python -m floodline.replay` writes three `Tick` nodes and links each decision taken at that time:
+
+```cypher
+CREATE (:Tick {seq: $seq, t: $t, label: $label})
+```
+
+```cypher
+MATCH (tick:Tick {seq: $seq}), (d:Decision {at: $t})
+MERGE (d)-[:AT_TICK]->(tick)
+```
+
+The incident is a fixed id, not a random draw: `(:Incident {id: 'inc-seed-1', kind: 'medical', severity: 4, source: 'synthetic'})`.
+
 Scout writes a done `ingest_report` task and an open `reassess` task, then:
 
 ```cypher

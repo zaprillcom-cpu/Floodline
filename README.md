@@ -137,7 +137,7 @@ graph LR
   A -- CLAIMED --> T[Task]
 ```
 
-Reserved for later slices, not loaded yet: `Incident`, `FloodZone`, `Tick`, vector index on `Report.emb`, `algo.WCC` cut-off, `algo.maxFlow` evacuation capacity.
+The replay command loads `Tick` and one synthetic `Incident`. `algo.WCC` and `algo.maxFlow` run in the cut-off demo and at tick 2. Still not loaded: `FloodZone`, and a vector index on `Report.emb`.
 
 Full query text: [docs/queries.md](docs/queries.md).
 
@@ -204,6 +204,20 @@ PYTHONPATH=backend python -m floodline.resume_demo --resume
 ```
 
 `--crash` is Scout plus a claim, then exit. `--resume` does not reload the network. It reads the claimed task and the Dispatcher heartbeat from FalkorDB and writes the route Decision.
+
+Replay the same morning on a fixed clock. Tick nodes are `seq` 0, 1, and 2. The incident id is `inc-seed-1`. Nothing in this command is random, and the times are reconstructed:
+
+```bash
+PYTHONPATH=backend python -m floodline.replay
+```
+
+```text
+TICK 0  2024-10-29T14:01:00Z  route 215 s
+TICK 1  2024-10-29T14:02:00Z  route 320 s  closed v31-paiporta-bridge
+TICK 2  2024-10-29T14:15:00Z  cut_off=True  maxFlow 1200 → 0 veh/h
+```
+
+Closing the bridge changes A-7's ETA and does not change evacuation throughput. Closing the roads out of Paiporta is what drops max-flow to 0.
 
 ## Agents
 
