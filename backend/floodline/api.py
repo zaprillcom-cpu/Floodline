@@ -6,7 +6,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from floodline.analysis import cut_off_areas, evac_capacity
 from floodline.config import Settings
+from floodline.db import get_graph
 from floodline.network import DEMO_REPORT
 from floodline.scenario import file_report, reset_scenario, snapshot
 
@@ -55,3 +57,13 @@ def reset() -> dict:
 @app.post("/api/scenario/report")
 def report(body: ReportIn) -> dict:
     return _guard(lambda: file_report(body.text))
+
+
+@app.get("/api/analysis/cutoff")
+def cutoff() -> list:
+    return _guard(lambda: cut_off_areas(get_graph()))
+
+
+@app.get("/api/analysis/evac")
+def evac(district: str = "Paiporta") -> dict:
+    return _guard(lambda: evac_capacity(get_graph(), district))
