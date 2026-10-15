@@ -13,6 +13,7 @@ Sahil writes and explains the graph model, the Cypher, and the LLM planner. Curs
 | Task | Owner | Where |
 |---|---|---|
 | Valencia extract inside `backend/`, `POST /api/admin/load-valencia` | AI-assist | `backend/floodline/api.py`, `backend/data/osm/` |
+| Streets around the citizen, `POST /api/area/load` | AI-assist | `backend/floodline/area.py`, `web/components/EscapeApp.tsx` |
 | Shelter and Citizen model (`NEAR`, `AT`, `CLOSES`) | Sahil | `ensure_shelter_citizen_model` in `backend/floodline/stubs.py` |
 | `route_to_shelter` (snap → top-k open shelters → CCH) | Sahil | `route_to_shelter` in `backend/floodline/stubs.py` |
 | MapLibre map, OpenFreeMap dark, 3D buildings | AI-assist | `web/components/FloodMap.tsx` |
@@ -47,6 +48,32 @@ curl -X POST https://floodline-production.up.railway.app/api/admin/load-valencia
 ```
 
 `/api/state` should then report `loaded: true` with 2526 intersections and 4742 ROAD edges. Routing stays in FalkorDB: CCH, then A*, then `algo.SPpaths`.
+
+## Around you
+
+The map asks for the browser's location on first load. If permission is already granted, it loads that tile. Otherwise it waits for **Use my location** or **Valencia demo**.
+
+`POST /api/area/load` takes `{ "lat", "lon", "radius_m" }`. `radius_m` defaults to 3000 and is rejected above 5000. It does **not** use `ADMIN_TOKEN`. The drive network comes from Overpass through the existing OSMnx path (`graph_from_bbox`, speeds, travel times). The request times out after 40 seconds and retries `https://overpass.kumi.systems/api`. The committed Valencia file is never overwritten.
+
+The graph name is a 0.05° tile, for example `fl-p3945-n00040` for 39.45, −0.40. A second load of that tile is read from FalkorDB and does not call Overpass. Uncached loads are limited to 4 per minute per client (`X-Forwarded-For`, otherwise the peer address). The loader builds the CCH index, then passes up to 8 OSM shelter candidates (`amenity=school|community_centre|social_facility`, `leisure=sports_centre`) into `ensure_shelter_citizen_model`. That stub is still Sahil's. The fallback attaches them with `ACCESS`, not `NEAR`.
+
+`GET /api/route`, `/api/escape/overlay`, `/api/escape/zones`, `/api/feed`, and `/api/stream` take `?graph=`. Reports may send the same id in the JSON body. Unknown ids are 400.
+
+`POST /api/area/valencia` loads `backend/data/osm/valencia_corridor.json` into the graph `valencia` with no Overpass call and no admin token. If that graph already has intersections it is left as-is, so the demo video does not depend on a live download.
+
+If Overpass fails, the API returns 502 and the map says so, with the Valencia demo one tap away.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/area/load \
+  -H 'content-type: application/json' \
+  -d '{"lat":39.47,"lon":-0.38}'
+
+curl -X POST http://127.0.0.1:8000/api/area/valencia
+
+curl 'http://127.0.0.1:8000/api/route?lat=39.4294&lon=-0.4183&graph=valencia'
+```
+
+Limits: radius 50–5000 m, tile 0.05°, 4 uncached downloads per minute, 8 provisional shelters, 40 s per Overpass mirror. An area with no shelter candidates has nowhere to route until Sahil's model, or the Valencia demo, supplies one. `ADMIN_TOKEN` still guards only `POST /api/admin/load-valencia`.
 
 **Tracks:** Track 1 — Agents That Act on Connected Data (primary). Track 2 — Agent Memory & Coordination.
 

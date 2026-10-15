@@ -38,6 +38,10 @@ class Settings:
             graph=os.environ.get("FALKORDB_GRAPH", "floodline"),
         )
 
+    def for_graph(self, graph: str) -> "Settings":
+        """Same FalkorDB server, a different graph name."""
+        return Settings(host=self.host, port=self.port, graph=graph)
+
 
 # Paths whose weight is at least this are treated as unreachable.
 UNREACHABLE_WEIGHT = 100_000_000

@@ -44,6 +44,8 @@ type Props = {
   onRetry: () => void;
   onDemo: () => void;
   onGo: (place: SavedPlace) => void;
+  place: string;
+  mapping: boolean;
 };
 
 export function MobileShell(props: Props) {
@@ -74,6 +76,8 @@ export function MobileShell(props: Props) {
             onFlood={props.onFlood}
             onRetry={props.onRetry}
             onDemo={props.onDemo}
+            place={props.place}
+            mapping={props.mapping}
           />
         )}
         {props.tab === "report" && (

@@ -96,7 +96,7 @@ def shelter_reachability(graph) -> dict:
     }
 
 
-def ensure_shelter_citizen_model(graph) -> dict:
+def ensure_shelter_citizen_model(graph, candidates: list[dict] | None = None) -> dict:
     """TODO(Sahil): create the v2 labels, relationships, and indexes.
 
     ``(:Shelter)-[:NEAR {dist_m}]->(:Intersection)``
@@ -105,8 +105,14 @@ def ensure_shelter_citizen_model(graph) -> dict:
     ``(:Task)-[:FOR]->(:Report)``
     ``(:Decision)-[:REROUTED]->(:Citizen)``
 
-    Fallback: read-only counts. Does not write the new model. Shelters that
-    the current loader already attached with ``ACCESS`` stay as they are.
+    ``candidates`` are OSM places the area loader found
+    (``amenity=school|community_centre|social_facility``,
+    ``leisure=sports_centre``), already snapped to an intersection.
+    Sahil's model should store those as ``NEAR``. This function does not.
+
+    Fallback: read-only counts. ``written`` stays false. When candidates were
+    passed and the v2 model was not written, they are attached with the
+    existing ``ACCESS`` pattern so a route still has a destination.
     """
     # TODO(Sahil)
     counts = {}
@@ -115,14 +121,20 @@ def ensure_shelter_citizen_model(graph) -> dict:
         counts[label] = int(found[0][0]) if found else 0
     near = rows(graph.query("MATCH ()-[r:NEAR]->() RETURN count(r) AS n"))
     at = rows(graph.query("MATCH ()-[r:AT]->() RETURN count(r) AS n"))
-    return {
+    result = {
         "stub": "ensure_shelter_citizen_model",
         "owner": "Sahil",
         "written": False,
         "counts": counts,
         "near": int(near[0][0]) if near else 0,
         "at": int(at[0][0]) if at else 0,
+        "candidates": len(candidates or []),
     }
+    if candidates and not result["written"]:
+        from floodline.provisional import attach_provisional_shelters
+
+        result["provisional"] = attach_provisional_shelters(graph, candidates)
+    return result
 
 
 def _shelter_rows(graph) -> list[dict]:
@@ -187,16 +199,23 @@ def _node_lat_lon(graph, osmid: int) -> tuple[float | None, float | None]:
     return float(lat), float(lon)
 
 
-def route_to_shelter(graph, lat: float, lon: float) -> dict:
+def route_to_shelter(graph, lat: float, lon: float, candidates: list[dict] | None = None) -> dict:
     """TODO(Sahil): snap → top-k open shelters by NEAR → CCH → lowest travel_s.
 
     ``GET /api/route`` should stay under 300 ms once this query is real.
 
-    Fallback: snap with ``snap_point``, then ``routing.route`` (CCH, then A*,
-    then SPpaths) to each existing Shelter that has an ACCESS edge. If no
-    shelter is reachable, use ``best_hospital`` so the map still gets a line.
+    ``candidates`` is the same OSM shelter list the area loader found.
+    Sahil should rank those with ``NEAR``. The fallback does not.
+
+    Fallback: if candidates were passed, ``ensure_shelter_citizen_model``
+    attaches them with ``ACCESS`` when the v2 model was not written. Then
+    snap with ``snap_point`` and ``routing.route`` (CCH, then A*, then
+    SPpaths) to each Shelter that has an ACCESS edge. If no shelter is
+    reachable, use ``best_hospital`` so the map still gets a line.
     """
     # TODO(Sahil): replace the body below with the NEAR + CCH shelter query.
+    if candidates:
+        ensure_shelter_citizen_model(graph, candidates)
     snapped = snap_point(graph, lat, lon)
     origin = int(snapped["osmid"])
     chosen = None

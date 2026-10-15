@@ -9,7 +9,7 @@ const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono", displ
 
 export const metadata: Metadata = {
   title: "Floodline",
-  description: "Escape a flooding Valencia street. Real roads, a FalkorDB route, and a live agent feed.",
+  description: "Escape a flooding street from where you are. Real roads, a FalkorDB route, and a live agent feed.",
 };
 
 export const viewport: Viewport = {

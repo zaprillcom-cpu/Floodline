@@ -171,7 +171,7 @@ def _travel_s(data: dict) -> int:
     return max(1, int(round(length / (speed / 3.6))))
 
 
-def prepare_drive_graph(graph) -> dict:
+def prepare_drive_graph(graph, *, bbox: dict | None = None, district_name: str | None = None) -> dict:
     """Turn an OSMnx drive graph into plain node and edge records.
 
     Parallel edges between the same ordered pair collapse to the fastest one.
@@ -236,7 +236,7 @@ def prepare_drive_graph(graph) -> dict:
                 "name": street[0][0] if street else f"n{node_id}",
                 "lat": lat,
                 "lon": lon,
-                "district": assign_district(lat, lon),
+                "district": district_name or assign_district(lat, lon),
                 "role": "junction",
             }
         )
@@ -260,25 +260,37 @@ def prepare_drive_graph(graph) -> dict:
         )
     edges.sort(key=lambda edge: (edge["road_id"], edge["src"], edge["dst"]))
 
-    present = {node["district"] for node in nodes}
-    districts = [
-        {
-            "name": spec.name,
-            "population": spec.population,
-            "zone_id": spec.zone_id,
-            "population_source": "synthetic",
-        }
-        for spec in DISTRICTS
-        if spec.name in present
-    ]
+    if district_name:
+        districts = [
+            {
+                "name": district_name,
+                "population": 0,
+                "zone_id": "area",
+                "population_source": "unknown",
+            }
+        ]
+        district_method = "area"
+    else:
+        present = {node["district"] for node in nodes}
+        districts = [
+            {
+                "name": spec.name,
+                "population": spec.population,
+                "zone_id": spec.zone_id,
+                "population_source": "synthetic",
+            }
+            for spec in DISTRICTS
+            if spec.name in present
+        ]
+        district_method = "nearest-centroid"
     return {
         "source": "osm",
         "attribution": "© OpenStreetMap contributors",
         "license": "ODbL-1.0",
         "tool": "osmnx",
         "network_type": "drive",
-        "bbox": bbox_dict(),
-        "district_method": "nearest-centroid",
+        "bbox": bbox if bbox is not None else bbox_dict(),
+        "district_method": district_method,
         "nodes": nodes,
         "edges": edges,
         "districts": districts,
@@ -341,3 +353,193 @@ def fetch_drive_graph(refresh: bool = False):
         prepared["osmnx_version"] = ""
     write_extract(prepared)
     return prepared, "overpass"
+
+
+# Public Overpass endpoints. The second is only used when the first times out
+# or errors. Neither write touches the committed Valencia extract.
+OVERPASS_MIRRORS = (
+    "https://overpass-api.de/api",
+    "https://overpass.kumi.systems/api",
+)
+AREA_OVERPASS_TIMEOUT_S = 40
+
+# OSM tags treated as provisional shelters until Sahil's model lands.
+SHELTER_TAGS = {
+    "amenity": ["school", "community_centre", "social_facility"],
+    "leisure": ["sports_centre"],
+}
+SHELTER_CAP = 8
+
+
+def parse_bbox(value) -> dict | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except Exception:
+            return None
+    if not isinstance(value, dict):
+        return None
+    try:
+        return {key: float(value[key]) for key in ("west", "south", "east", "north")}
+    except Exception:
+        return None
+
+
+def _download_drive(bbox: tuple[float, float, float, float], url: str, timeout_s: int):
+    import osmnx as ox
+
+    ox.settings.use_cache = True
+    ox.settings.cache_folder = str(CACHE_DIR)
+    ox.settings.requests_timeout = timeout_s
+    ox.settings.overpass_url = url
+    graph = ox.graph_from_bbox(bbox, network_type="drive", simplify=True, retain_all=False)
+    graph = ox.add_edge_speeds(graph, fallback=FALLBACK_SPEED_KPH)
+    graph = ox.add_edge_travel_times(graph)
+    for _src, _dst, _key, data in graph.edges(keys=True, data=True):
+        data.pop("geometry", None)
+    return graph
+
+
+def fetch_area_drive_graph(
+    bbox: tuple[float, float, float, float],
+    *,
+    timeout_s: int = AREA_OVERPASS_TIMEOUT_S,
+    urls: tuple[str, ...] = OVERPASS_MIRRORS,
+    download=None,
+) -> tuple[dict, str]:
+    """Download a drive network for an arbitrary bbox. Does not write the Valencia extract.
+
+    ``download(bbox, url, timeout_s)`` exists so tests can fail the first mirror.
+    """
+    fetch = download or _download_drive
+    box = {"west": bbox[0], "south": bbox[1], "east": bbox[2], "north": bbox[3]}
+    errors: list[str] = []
+    for url in urls:
+        try:
+            graph = fetch(bbox, url, timeout_s)
+            prepared = prepare_drive_graph(graph, bbox=box, district_name="here")
+        except Exception as exc:
+            errors.append(f"{url}: {exc}")
+            continue
+        prepared["overpass_url"] = url
+        if not prepared["edges"]:
+            errors.append(f"{url}: no driveable streets")
+            continue
+        return prepared, url
+    detail = "; ".join(errors) if errors else "no mirror responded"
+    raise RuntimeError(detail)
+
+
+def _label(value) -> str:
+    if value is None:
+        return ""
+    try:
+        if value != value:  # NaN
+            return ""
+    except Exception:
+        return ""
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return ""
+    return text
+
+
+def records_from_features(frame) -> list[dict]:
+    """Turn an OSMnx GeoDataFrame into plain shelter records. Empty if it is missing."""
+    if frame is None or getattr(frame, "empty", True):
+        return []
+    records = []
+    for idx, row in frame.iterrows():
+        geom = getattr(row, "geometry", None)
+        if geom is None or getattr(geom, "is_empty", True):
+            continue
+        point = geom if getattr(geom, "geom_type", "") == "Point" else geom.centroid
+        if isinstance(idx, tuple) and len(idx) >= 2:
+            ident = f"osm-{idx[0]}-{idx[1]}"
+        else:
+            ident = f"osm-{idx}"
+        amenity = _label(row.get("amenity") if hasattr(row, "get") else None)
+        leisure = _label(row.get("leisure") if hasattr(row, "get") else None)
+        kind = amenity or leisure or "shelter"
+        name = _label(row.get("name") if hasattr(row, "get") else None) or kind.replace("_", " ").title()
+        records.append(
+            {
+                "id": ident,
+                "name": name[:120],
+                "kind": kind[:40],
+                "lat": float(point.y),
+                "lon": float(point.x),
+            }
+        )
+    return records
+
+
+def nearest_shelters(records: list[dict], lat: float, lon: float, limit: int = SHELTER_CAP) -> list[dict]:
+    """Keep the closest provisional shelters. Farther ones are dropped so routing stays small."""
+    scored = []
+    for record in records:
+        try:
+            slat = float(record["lat"])
+            slon = float(record["lon"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        scored.append((haversine_m(lat, lon, slat, slon), record, slat, slon))
+    scored.sort(key=lambda item: item[0])
+    chosen = []
+    seen = set()
+    for dist, record, slat, slon in scored:
+        key = str(record.get("id") or f"{slat:.5f},{slon:.5f}")
+        if key in seen:
+            continue
+        seen.add(key)
+        chosen.append(
+            {
+                "id": key,
+                "name": str(record.get("name") or "Shelter")[:120],
+                "kind": str(record.get("kind") or "shelter")[:40],
+                "lat": slat,
+                "lon": slon,
+                "dist_m": int(dist),
+            }
+        )
+        if len(chosen) >= limit:
+            break
+    return chosen
+
+
+def _download_features(bbox: tuple[float, float, float, float], url: str, timeout_s: int):
+    import osmnx as ox
+
+    ox.settings.use_cache = True
+    ox.settings.cache_folder = str(CACHE_DIR)
+    ox.settings.requests_timeout = timeout_s
+    ox.settings.overpass_url = url
+    return ox.features_from_bbox(bbox, SHELTER_TAGS)
+
+
+def fetch_shelter_candidates(
+    bbox: tuple[float, float, float, float],
+    lat: float,
+    lon: float,
+    *,
+    timeout_s: int = AREA_OVERPASS_TIMEOUT_S,
+    urls: tuple[str, ...] = OVERPASS_MIRRORS,
+    download=None,
+    limit: int = SHELTER_CAP,
+) -> list[dict]:
+    """Schools, community centres, social facilities, and sports centres near the citizen.
+
+    A mirror failure tries the next one. If every mirror fails, the street graph
+    still loads and this returns an empty list.
+    """
+    fetch = download or _download_features
+    for url in urls:
+        try:
+            frame = fetch(bbox, url, timeout_s)
+            records = records_from_features(frame)
+        except Exception:
+            continue
+        return nearest_shelters(records, lat, lon, limit)
+    return []

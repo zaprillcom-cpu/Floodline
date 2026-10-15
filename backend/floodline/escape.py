@@ -6,9 +6,10 @@ Shelter selection itself is the Sahil stub in ``stubs.route_to_shelter``.
 
 from __future__ import annotations
 
+from floodline.config import Settings
 from floodline.db import get_graph, rows
 from floodline.navigation import line_coordinates
-from floodline.osm_network import bbox_dict
+from floodline.osm_network import bbox_dict, parse_bbox
 from floodline.stubs import reroute_affected, route_to_shelter, shelter_reachability
 
 
@@ -17,8 +18,8 @@ def _loaded(graph) -> bool:
     return bool(found and int(found[0][0]) > 0)
 
 
-def route_payload(lat: float, lon: float) -> dict:
-    graph = get_graph()
+def route_payload(lat: float, lon: float, settings: Settings | None = None) -> dict:
+    graph = get_graph(settings)
     if not _loaded(graph):
         raise LookupError("Graph is not loaded")
     raw = route_to_shelter(graph, lat, lon)
@@ -194,10 +195,28 @@ def cutoff_zones(graph) -> dict:
     }
 
 
-def overlay_payload() -> dict:
-    graph = get_graph()
+def _graph_bbox(graph) -> dict:
+    found = rows(graph.query("MATCH (m:Meta {key: 'network'}) RETURN m.bbox"))
+    if found:
+        parsed = parse_bbox(found[0][0])
+        if parsed:
+            return parsed
+    return bbox_dict()
+
+
+def overlay_payload(settings: Settings | None = None) -> dict:
+    cfg = settings or Settings.from_env()
+    graph = get_graph(cfg)
     if not _loaded(graph):
-        return {"loaded": False, "bbox": bbox_dict(), "pins": [], "closed": [], "counts": None, "network": None}
+        return {
+            "loaded": False,
+            "graph": cfg.graph,
+            "bbox": bbox_dict(),
+            "pins": [],
+            "closed": [],
+            "counts": None,
+            "network": None,
+        }
     counts = {
         "intersections": int(rows(graph.query("MATCH (i:Intersection) RETURN count(i)"))[0][0]),
         "road_edges": int(rows(graph.query("MATCH ()-[r:ROAD]->() RETURN count(r)"))[0][0]),
@@ -224,7 +243,8 @@ def overlay_payload() -> dict:
     ]
     return {
         "loaded": True,
-        "bbox": bbox_dict(),
+        "graph": cfg.graph,
+        "bbox": _graph_bbox(graph),
         "counts": counts,
         "network": network,
         "router": router_rows[0][0] if router_rows else None,
@@ -234,7 +254,7 @@ def overlay_payload() -> dict:
     }
 
 
-def note_reroute(road_id: str) -> dict:
+def note_reroute(road_id: str, settings: Settings | None = None) -> dict:
     """Record that citizen fan-out is still Sahil's. Does not write a Decision."""
-    graph = get_graph()
+    graph = get_graph(settings)
     return reroute_affected(graph, road_id)

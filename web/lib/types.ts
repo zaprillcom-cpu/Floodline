@@ -73,6 +73,7 @@ export type ClosedRoad = {
 
 export type Overlay = {
   loaded: boolean;
+  graph?: string;
   bbox: { west: number; south: number; east: number; north: number };
   counts: { intersections: number; road_edges: number; passable: number } | null;
   network: { source: string; attribution: string } | null;
