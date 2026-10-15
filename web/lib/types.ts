@@ -85,6 +85,13 @@ export type ClosedRoad = {
   road_id: string;
   name: string;
   coordinates: [number, number][];
+  report?: string;
+  closure_type?: string;
+  at?: string;
+  closed_at?: string;
+  agent?: string;
+  decision_id?: string;
+  closed_by?: string;
 };
 
 export type Overlay = {

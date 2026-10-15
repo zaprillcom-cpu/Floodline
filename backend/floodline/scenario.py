@@ -9,9 +9,16 @@ from floodline.agents.scout import handle_report
 from floodline.config import T_CLOSE, T_ROUTE, Settings
 from floodline.db import get_graph, rows
 from floodline.ingest import reset_and_load
-from floodline.network import DEMO_REPORT, UNIT_CALLSIGN, UNIT_OSMID
+from floodline.network import DEMO_REPORT, UNIT_CALLSIGN, UNIT_OSMID, haversine_m
 from floodline.routing import route
-from floodline.tools import best_hospital, write_route_decision
+from floodline.tools import (
+    best_hospital,
+    create_task,
+    reopen_road,
+    unit_state,
+    write_reopen_decision,
+    write_route_decision,
+)
 
 
 def _list(value):
@@ -53,6 +60,114 @@ def reset_scenario(settings: Settings | None = None) -> dict:
     state = snapshot(cfg)
     state["load"] = loaded
     state["opening"] = opening
+    return state
+
+
+def _closed_segments(graph) -> list[dict]:
+    found = rows(
+        graph.query(
+            """
+            MATCH (a:Intersection)-[r:ROAD {status: 'closed'}]->(b:Intersection)
+            RETURN r.road_id, r.name, a.lat, a.lon, b.lat, b.lon
+            """
+        )
+    )
+    grouped: dict[str, dict] = {}
+    for road_id, name, alat, alon, blat, blon in found:
+        if road_id in grouped:
+            continue
+        grouped[road_id] = {
+            "road_id": road_id,
+            "name": name or road_id,
+            "lat": (float(alat) + float(blat)) / 2,
+            "lon": (float(alon) + float(blon)) / 2,
+        }
+    return list(grouped.values())
+
+
+def reopen_roads(
+    *,
+    road_id: str | None = None,
+    lat: float | None = None,
+    lon: float | None = None,
+    clear_test: bool = False,
+    settings: Settings | None = None,
+) -> dict:
+    """Restore travel_s, recreate PASSABLE, write a reopen Decision, then reroute.
+
+    No admin token. ``clear_test`` reopens every closed road on this graph.
+    A lat/lon without a road id reopens closures within 800 m (My area is OK).
+    """
+    from floodline.escape import note_reroute
+
+    cfg = settings or Settings.from_env()
+    graph = get_graph(cfg)
+    closed = _closed_segments(graph)
+    if clear_test:
+        chosen = closed
+    elif road_id:
+        chosen = [item for item in closed if item["road_id"] == road_id]
+        if not chosen:
+            raise LookupError("That road is not closed")
+    elif lat is not None and lon is not None:
+        chosen = [
+            item
+            for item in closed
+            if haversine_m(lat, lon, item["lat"], item["lon"]) <= 800
+        ]
+        if not chosen:
+            raise LookupError("No closed road near this point")
+    else:
+        raise ValueError("Say which road to reopen")
+    if not chosen:
+        return {
+            "ok": True,
+            "reopened": [],
+            "decision_id": None,
+            "graph": cfg.graph,
+            "message": "No test closures on this map.",
+        }
+    for item in chosen:
+        reopen_road(graph, item["road_id"])
+    names = ", ".join(item["name"] for item in chosen)
+    explanation = (
+        f"Citizen marked {names} clear. travel_s was restored from base_travel_s, "
+        f"capacity was restored, status is open, and the PASSABLE mirrors were recreated."
+    )
+    decision_id = write_reopen_decision(
+        graph,
+        road_id=chosen[0]["road_id"] if len(chosen) == 1 else "",
+        road_name=names,
+        at=T_CLOSE,
+        explanation=explanation,
+    )
+    dispatcher: dict = {"claimed": False}
+    try:
+        unit = unit_state(graph)
+        if unit:
+            hospital = best_hospital(graph, int(unit["osmid"]))
+            create_task(
+                graph,
+                kind="reassess",
+                status="open",
+                priority=5,
+                created_at=T_CLOSE,
+                road_id=chosen[0]["road_id"],
+                road_name=names,
+                from_osmid=int(unit["osmid"]),
+                to_osmid=int(hospital["osmid"]),
+                close_decision_id=decision_id,
+            )
+            dispatcher = reroute(graph, at=T_CLOSE)
+    except Exception:
+        dispatcher = {"claimed": False, "error": "reroute skipped"}
+    state = snapshot(cfg)
+    state["ok"] = True
+    state["reopened"] = [item["road_id"] for item in chosen]
+    state["decision_id"] = decision_id
+    state["dispatcher"] = dispatcher
+    state["citizen_reroute"] = note_reroute(chosen[0]["road_id"], cfg)
+    state["message"] = f"Reopened {names}."
     return state
 
 

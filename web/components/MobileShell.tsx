@@ -47,6 +47,7 @@ type Props = {
   onDestination: (id: string) => void;
   chooser?: number;
   onGo: (place: SavedPlace) => void;
+  onClearClosures: () => void;
   place: string;
   mapping: boolean;
 };
@@ -89,13 +90,22 @@ export function MobileShell(props: Props) {
             text={props.report}
             busy={props.busy}
             loaded={Boolean(props.overlay?.loaded)}
+            pose={props.pose}
+            placeName={props.place}
             onChange={props.onReport}
             onSubmit={props.onSubmit}
             onAhead={props.onAhead}
           />
         )}
         {props.tab === "live" && <AgentFeed events={props.events} />}
-        {props.tab === "me" && <MePanel pose={props.pose} onGo={props.onGo} />}
+        {props.tab === "me" && (
+          <MePanel
+            pose={props.pose}
+            onGo={props.onGo}
+            onClearClosures={props.onClearClosures}
+            clearBusy={props.busy}
+          />
+        )}
       </BottomSheet>
       <nav className="tabbar" role="tablist" aria-label="Floodline">
         {TABS.map(({ id, label, Icon }) => (

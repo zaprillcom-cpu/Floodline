@@ -40,6 +40,8 @@ def query_label(algo: str | None, kind: str | None) -> str:
         return _QUERY_BY_ALGO[algo]
     if kind == "close":
         return "SET ROAD.travel_s = 1000000000, ROAD.capacity = 0, ROAD.status = 'closed'; DELETE PASSABLE"
+    if kind == "reopen":
+        return "SET ROAD.travel_s = ROAD.base_travel_s, ROAD.status = 'open'; MERGE PASSABLE"
     if kind == "route":
         return _QUERY_BY_ALGO["cch"]
     if kind in ("ingest_report", "reassess"):
@@ -50,7 +52,7 @@ def query_label(algo: str | None, kind: str | None) -> str:
 def _agent(name: str | None, kind: str | None) -> str:
     if name:
         return str(name)
-    if kind in ("close", "ingest_report"):
+    if kind in ("close", "reopen", "ingest_report"):
         return "Scout"
     if kind in ("route", "reassess"):
         return "Dispatcher"

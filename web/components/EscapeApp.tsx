@@ -4,7 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { DesktopHud } from "@/components/DesktopHud";
 import { MobileShell } from "@/components/MobileShell";
-import { fetchFeed, fetchOverlay, fetchRoute, fetchZones, fileReport, loadArea, type AreaJob } from "@/lib/api";
+import { fetchFeed, fetchOverlay, fetchRoute, fetchZones, fileReport, loadArea, reopenRoad, type AreaJob } from "@/lib/api";
+import { MapPrompt } from "@/components/MapPrompt";
+import { DISASTERS } from "@/lib/disasters";
 import { bundledCity, cityContains, type CitySlug } from "@/lib/cities";
 import {
   PAIPORTA,
@@ -16,7 +18,7 @@ import {
   type Pose,
 } from "@/lib/geo";
 import type { SavedPlace } from "@/lib/storage";
-import type { FeedEvent, Overlay, RoutePlan, TabId } from "@/lib/types";
+import type { ClosedRoad, FeedEvent, Overlay, RoutePlan, TabId } from "@/lib/types";
 
 const FloodMap = dynamic(() => import("@/components/FloodMap").then((mod) => mod.FloodMap), { ssr: false });
 
@@ -48,7 +50,11 @@ export function EscapeApp() {
   const [mappingTitle, setMappingTitle] = useState("Mapping streets around you…");
   const [stageText, setStageText] = useState("Finding your position");
   const [chooser, setChooser] = useState(0);
+  const [reportFocus, setReportFocus] = useState(0);
   const [travel, setTravel] = useState<"live" | "demo">("demo");
+  const [promptPlace, setPromptPlace] = useState<{ lat: number; lon: number; name: string; pinId?: string } | null>(null);
+  const [promptClosure, setPromptClosure] = useState<ClosedRoad | null>(null);
+  const [promptArea, setPromptArea] = useState<{ lat: number; lon: number; name: string } | null>(null);
   const progressRef = useRef(0);
   const poseRef = useRef(pose);
   const seen = useRef(new Set<string>());
@@ -335,6 +341,58 @@ export function EscapeApp() {
     }
   }
 
+  async function refreshAfterReopen() {
+    const active = graphRef.current;
+    const nextOverlay = await fetchOverlay(active);
+    setOverlay(nextOverlay);
+    const here = poseRef.current;
+    await refreshRoute(here.lat, here.lon, "move", active);
+  }
+
+  async function markClear(roadId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await reopenRoad({ road_id: roadId, graph: graphRef.current });
+      await refreshAfterReopen();
+      setPromptClosure(null);
+      setNotice({ title: "Road is open", detail: result.message || "The closure was cleared and the route was recomputed." });
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "Could not reopen that road");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function markAreaOk(lat: number, lon: number) {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await reopenRoad({ lat, lon, graph: graphRef.current });
+      await refreshAfterReopen();
+      setPromptArea(null);
+      setNotice({ title: "Your area is OK", detail: result.message || "Nearby closures were cleared." });
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "Could not clear this area");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function clearClosures() {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await reopenRoad({ clear_test: true, graph: graphRef.current });
+      await refreshAfterReopen();
+      setNotice({ title: "Test closures cleared", detail: result.message || "Closed roads on this map were reopened." });
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "Could not clear closures");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function aheadText(): string {
     const point = coords && coords.length >= 2
       ? pointAlong(coords, metrics.cum, Math.min(metrics.total, progressRef.current + 140))
@@ -400,7 +458,7 @@ export function EscapeApp() {
     destRef.current = id;
     const here = poseRef.current;
     setNavigating(false);
-    void refreshRoute(here.lat, here.lon, "move", graphRef.current, id).catch((exc: unknown) =>
+    return refreshRoute(here.lat, here.lon, "move", graphRef.current, id).catch((exc: unknown) =>
       setError(exc instanceof Error ? exc.message : "Could not change destination"),
     );
   }
@@ -514,7 +572,9 @@ export function EscapeApp() {
     onCity: (slug: CitySlug) => void openCity(slug),
     onDestination: chooseDestination,
     chooser,
+    reportFocus,
     onGo: goToPlace,
+    onClearClosures: () => void clearClosures(),
     place,
     mapping: phase === "mapping" || phase === "boot",
   };
@@ -542,7 +602,72 @@ export function EscapeApp() {
         progressRef={progressRef}
         paddingRight={mobile ? 12 : width >= 1024 ? 400 : 340}
         mobile={mobile}
+        showControls={phase === "ready" || phase === "choose"}
         onSample={onSample}
+        onPlace={(place) => {
+          setPromptClosure(null);
+          setPromptArea(null);
+          setPromptPlace(place);
+        }}
+        onClosed={(roadId) => {
+          const road = (overlay?.closed ?? []).find((item) => item.road_id === roadId) ?? null;
+          setPromptPlace(null);
+          setPromptArea(null);
+          setPromptClosure(road);
+        }}
+        onArea={() => {
+          setPromptPlace(null);
+          setPromptClosure(null);
+          setPromptArea({ lat: poseRef.current.lat, lon: poseRef.current.lon, name: "Your area" });
+        }}
+      />
+      <MapPrompt
+        place={promptPlace}
+        closure={promptClosure}
+        area={promptArea}
+        busy={busy}
+        onClose={() => {
+          setPromptPlace(null);
+          setPromptClosure(null);
+          setPromptArea(null);
+        }}
+        onNavigate={(lat, lon) => {
+          const pinId = promptPlace?.pinId;
+          setPromptPlace(null);
+          setNavigating(false);
+          if (pinId) {
+            void Promise.resolve(chooseDestination(pinId)).then(() => setNavigating(true));
+            return;
+          }
+          setTravel("demo");
+          void refreshRoute(lat, lon, "move").then(() => setNavigating(true)).catch((exc: unknown) =>
+            setError(exc instanceof Error ? exc.message : "Could not navigate there"),
+          );
+        }}
+        onReport={(lat, lon, name) => {
+          const flood = DISASTERS.find((item) => item.id === "flooded");
+          setReport(flood ? flood.template(lat, lon, name) : `Flooded road at ${lat.toFixed(5)}, ${lon.toFixed(5)}. The road is under water and not passable.`);
+          setPromptPlace(null);
+          setTab("report");
+          setReportFocus((value) => value + 1);
+        }}
+        onSetLocation={(lat, lon) => {
+          lastFix.current = { lat, lon };
+          const next = { lat, lon, bearing: 0 };
+          poseRef.current = next;
+          setPose(next);
+          setPromptPlace(null);
+          setNavigating(false);
+          void refreshRoute(lat, lon, "move").catch((exc: unknown) =>
+            setError(exc instanceof Error ? exc.message : "Could not use that location"),
+          );
+        }}
+        onReopen={(roadId) => void markClear(roadId)}
+        onStillFlooded={() => {
+          setPromptClosure(null);
+          setNotice({ title: "Still flooded", detail: "The road stays closed." });
+        }}
+        onAreaOk={(lat, lon) => void markAreaOk(lat, lon)}
       />
       <header className="float-brand">
         <span>Floodline</span>

@@ -61,8 +61,8 @@ button { cursor: pointer; }
 
 .float-brand {
   position: absolute;
-  top: 14px;
-  left: 14px;
+  top: calc(12px + env(safe-area-inset-top));
+  left: 16px;
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -128,9 +128,12 @@ button { cursor: pointer; }
   backdrop-filter: var(--blur);
 }
 
-.app-root.mobile .vision-chip { top: 78px; left: 12px; }
+.app-root.mobile .vision-chip {
+  top: calc(92px + env(safe-area-inset-top));
+  left: 16px;
+}
 .app-root.flood .banner { top: 58px; }
-.app-root.mobile.app-root.flood .banner { top: 112px; }
+.app-root.mobile.flood .banner { top: calc(136px + env(safe-area-inset-top)); }
 
 .banner::before {
   content: "";
@@ -157,9 +160,10 @@ button { cursor: pointer; }
 }
 
 .app-root.mobile .banner {
-  top: 74px;
-  left: 12px;
-  width: calc(100% - 24px);
+  top: calc(96px + env(safe-area-inset-top));
+  left: 16px;
+  right: 16px;
+  width: auto;
 }
 
 @media (min-width: 768px) {
@@ -250,8 +254,8 @@ button { cursor: pointer; }
 .lede {
   margin: 0;
   color: var(--secondary);
-  font-size: 14px;
-  line-height: 1.4;
+  font-size: 16px;
+  line-height: 1.45;
 }
 
 .stat-row {
@@ -476,9 +480,9 @@ button { cursor: pointer; }
 
 .sheet {
   position: absolute;
-  left: 8px;
-  right: 8px;
-  bottom: calc(62px + env(safe-area-inset-bottom));
+  left: 16px;
+  right: 16px;
+  bottom: calc(64px + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
   border-radius: 22px;
@@ -493,21 +497,24 @@ button { cursor: pointer; }
 .handle-hit {
   border: 0;
   background: transparent;
-  height: 28px;
+  min-height: 44px;
+  width: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 12px 16px 8px;
   touch-action: none;
+  cursor: grab;
 }
 
 .handle {
-  width: 36px;
-  height: 5px;
+  width: 48px;
+  height: 6px;
   border-radius: 99px;
-  background: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.45);
 }
 
-.sheet-body { padding: 0 12px 14px; }
+.sheet-body { padding: 0 16px 16px; }
 
 .tabbar {
   position: absolute;
@@ -553,11 +560,12 @@ button { cursor: pointer; }
 }
 
 .app-root.mobile .attrib {
-  bottom: auto;
-  top: 14px;
-  right: 12px;
-  left: auto;
-  text-align: right;
+  top: auto;
+  bottom: calc(52vh + 16px + env(safe-area-inset-bottom));
+  left: 16px;
+  right: 72px;
+  max-width: none;
+  text-align: left;
 }
 
 .puck { width: 22px; height: 22px; }
@@ -651,7 +659,12 @@ button { cursor: pointer; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.dest-option strong { font-size: 13px; color: var(--secondary); }
+.dest-option strong {
+  flex: 0 0 auto;
+  font-size: 15px;
+  color: var(--secondary);
+  white-space: nowrap;
+}
 .dest-option.current { border-color: rgba(100, 210, 255, 0.7); }
 .dest-option:disabled { cursor: default; opacity: 0.85; }
 .pin-label {
@@ -668,9 +681,12 @@ button { cursor: pointer; }
   text-overflow: ellipsis;
 }
 
-.maplibregl-ctrl-top-left { top: 64px !important; left: 8px !important; }
-@media (min-width: 768px) {
-  .maplibregl-ctrl-top-left { top: 12px !important; left: 12px !important; }
+.maplibregl-ctrl-top-left { top: 12px !important; left: 12px !important; }
+.app-root.mobile .maplibregl-ctrl-top-right {
+  top: auto !important;
+  bottom: calc(52vh + 16px + env(safe-area-inset-bottom)) !important;
+  right: 16px !important;
+  left: auto !important;
 }
 .maplibregl-ctrl-group {
   background: rgba(18, 18, 20, 0.82) !important;
@@ -685,7 +701,10 @@ button { cursor: pointer; }
   font-size: 10px !important;
 }
 .maplibregl-ctrl-attrib a { color: white !important; }
-.app-root.mobile .maplibregl-ctrl-bottom-left { bottom: calc(28vh + 70px) !important; }
+.app-root.mobile .maplibregl-ctrl-bottom-left,
+.app-root.mobile .maplibregl-ctrl-bottom-right {
+  bottom: calc(52vh + 16px + env(safe-area-inset-bottom)) !important;
+}
 
 .boot {
   min-height: 100vh;
@@ -701,11 +720,11 @@ button { cursor: pointer; }
 .map-loading {
   position: absolute;
   z-index: 30;
-  left: 50%;
-  top: 18%;
-  transform: translateX(-50%);
-  width: min(420px, calc(100vw - 36px));
-  padding: 22px 22px 18px;
+  left: 16px;
+  right: 16px;
+  top: calc(108px + env(safe-area-inset-top));
+  width: auto;
+  padding: 20px 16px 16px;
   border-radius: 22px;
   background: var(--glass);
   border: 1px solid var(--stroke);
@@ -742,8 +761,94 @@ button { cursor: pointer; }
   transition: width 180ms linear;
 }
 
+.map-prompt .btn { height: auto; min-height: 48px; padding: 12px 14px; white-space: normal; line-height: 1.25; }
+.map-prompt .row { width: 100%; }
+.map-prompt {
+  position: absolute;
+  z-index: 25;
+  left: 16px;
+  right: 16px;
+  bottom: calc(30vh + 78px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  border-radius: 18px;
+  background: rgba(16, 16, 18, 0.94);
+  border: 1px solid var(--stroke);
+  box-shadow: var(--shadow);
+  max-height: 46vh;
+  overflow: auto;
+}
+.prompt-close { align-self: flex-end; }
+.prompt-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+.prompt-facts div { min-width: 0; }
+.prompt-facts dt {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--tertiary);
+}
+.prompt-facts dd {
+  margin: 2px 0 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.suggest, .suggest-list button {
+  border: 1px solid var(--stroke);
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  border-radius: 999px;
+  padding: 8px 12px;
+  min-height: 36px;
+  font-size: 14px;
+}
+.suggest-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.suggest-list button {
+  width: 100%;
+  text-align: left;
+  border-radius: 12px;
+}
+@media (min-width: 768px) {
+  .map-loading {
+    left: 50%;
+    right: auto;
+    top: 18%;
+    transform: translateX(-50%);
+    width: min(420px, calc(100vw - 32px));
+  }
+  .map-prompt {
+    left: auto;
+    right: 360px;
+    width: min(380px, calc(100vw - 420px));
+    bottom: 24px;
+  }
+}
 @media (max-width: 767px) {
-  .map-loading { top: 12%; }
+  .display { font-size: 36px; }
+  .dest-option { min-height: 44px; font-size: 15px; padding: 10px 12px; }
+  .banner strong { font-size: 18px; }
+  .map-prompt {
+    bottom: calc(52vh + 20px + env(safe-area-inset-bottom));
+    max-height: 38vh;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

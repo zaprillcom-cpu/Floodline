@@ -200,27 +200,92 @@ def route_payload(
     }
 
 
+def closure_kind(text: str) -> str:
+    """Label a citizen report for the closed-road popup."""
+    lowered = (text or "").lower()
+    for label, hints in (
+        ("Waterlogging", ("waterlogging",)),
+        ("Earthquake damage", ("earthquake",)),
+        ("Landslide", ("landslide",)),
+        ("Fallen tree", ("fallen tree", "tree")),
+        ("Building collapse", ("collapse",)),
+        ("Power line down", ("power line",)),
+        ("Fire", ("fire",)),
+        ("Flooded road", ("flood", "under water", "water")),
+        ("Road blocked", ("blocked", "closed")),
+    ):
+        if any(hint in lowered for hint in hints):
+            return label
+    return "Closure"
+
+
 def closed_roads(graph) -> list[dict]:
     found = rows(
         graph.query(
             """
             MATCH (a:Intersection)-[r:ROAD {status: 'closed'}]->(b:Intersection)
-            RETURN r.road_id, r.name, a.lon, a.lat, b.lon, b.lat
+            OPTIONAL MATCH (d:Decision {kind: 'close', road_id: r.road_id})
+            OPTIONAL MATCH (agent:Agent)-[:MADE]->(d)
+            OPTIONAL MATCH (d)-[:BASED_ON]->(rep:Report)
+            RETURN r.road_id, r.name, r.closed_at, r.closed_by,
+                   a.lon, a.lat, b.lon, b.lat,
+                   d.id, d.seq, d.at, d.superseded, agent.name, rep.text
             """
         )
     )
     grouped: dict[str, dict] = {}
-    for road_id, name, alon, alat, blon, blat in found:
-        if road_id in grouped:
-            continue
-        grouped[road_id] = {
-            "road_id": road_id,
-            "name": name or road_id,
-            "coordinates": [
-                [round(float(alon), 7), round(float(alat), 7)],
-                [round(float(blon), 7), round(float(blat), 7)],
-            ],
-        }
+    for (
+        road_id,
+        name,
+        closed_at,
+        closed_by,
+        alon,
+        alat,
+        blon,
+        blat,
+        decision_id,
+        seq,
+        at,
+        superseded,
+        agent,
+        report,
+    ) in found:
+        if superseded:
+            decision_id = None
+        item = grouped.get(road_id)
+        if item is None:
+            item = {
+                "road_id": road_id,
+                "name": name or road_id,
+                "coordinates": [
+                    [round(float(alon), 7), round(float(alat), 7)],
+                    [round(float(blon), 7), round(float(blat), 7)],
+                ],
+                "closed_at": closed_at or "",
+                "closed_by": closed_by or "",
+                "decision_id": "",
+                "at": closed_at or "",
+                "agent": closed_by or "",
+                "report": "",
+                "closure_type": "Closure",
+                "_seq": -1,
+            }
+            grouped[road_id] = item
+        decision_seq = int(seq or 0)
+        if decision_id and decision_seq >= int(item["_seq"]):
+            text = report or ""
+            item["_seq"] = decision_seq
+            item["decision_id"] = decision_id
+            item["at"] = at or item["at"]
+            item["agent"] = agent or item["agent"] or "Scout"
+            item["report"] = text
+            item["closure_type"] = closure_kind(text)
+    for item in grouped.values():
+        item.pop("_seq", None)
+        if not item["closure_type"] or item["closure_type"] == "Closure":
+            item["closure_type"] = closure_kind(item.get("report") or "")
+        if not item["agent"]:
+            item["agent"] = item.get("closed_by") or "Scout"
     return list(grouped.values())
 
 

@@ -29,7 +29,7 @@ from floodline.escape import cutoff_zones, note_reroute, overlay_payload, route_
 from floodline.events import collect_events, format_sse
 from floodline.network import DEMO_REPORT
 from floodline.osm_demo import load_osm_graph
-from floodline.scenario import file_report, reset_scenario, snapshot
+from floodline.scenario import file_report, reopen_roads, reset_scenario, snapshot
 
 app = FastAPI(title="Floodline", version="0.1.0")
 app.add_middleware(
@@ -43,6 +43,14 @@ app.add_middleware(
 class ReportIn(BaseModel):
     text: str = Field(default=DEMO_REPORT, min_length=1)
     graph: str | None = None
+
+
+class ReopenIn(BaseModel):
+    road_id: str | None = Field(default=None, max_length=80)
+    graph: str | None = None
+    lat: float | None = Field(default=None, ge=-90, le=90)
+    lon: float | None = Field(default=None, ge=-180, le=180)
+    clear_test: bool = False
 
 
 class AreaIn(BaseModel):
@@ -111,6 +119,25 @@ def report(body: ReportIn, graph: str | None = Query(default=None)) -> dict:
         return state
 
     return _guard(run)
+
+
+@app.post("/api/road/reopen")
+def road_reopen(body: ReopenIn, graph: str | None = Query(default=None)) -> dict:
+    """Mark a closed road clear. Restores travel_s, recreates PASSABLE, writes a Decision.
+
+    No admin token. ``clear_test`` reopens every closure on the graph. A lat/lon
+    reopens closures within 800 m. The Decision shows up on the SSE feed.
+    """
+    cfg = _settings_for(graph or body.graph)
+    return _guard(
+        lambda: reopen_roads(
+            road_id=body.road_id,
+            lat=body.lat,
+            lon=body.lon,
+            clear_test=body.clear_test,
+            settings=cfg,
+        )
+    )
 
 
 @app.post("/api/scenario/corridor")

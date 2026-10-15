@@ -31,7 +31,11 @@ type Props = {
   progressRef: MutableRefObject<number>;
   paddingRight: number;
   mobile: boolean;
+  showControls?: boolean;
   onSample: (progress: number, pose: Pose) => void;
+  onPlace?: (place: { lat: number; lon: number; name: string; pinId?: string }) => void;
+  onClosed?: (roadId: string) => void;
+  onArea?: () => void;
 };
 
 type FeatureCollection = {
@@ -115,6 +119,13 @@ function ensure(map: maplibregl.Map) {
         "line-opacity": 0.9,
       },
     });
+    map.addLayer({
+      id: "closed-hit",
+      type: "line",
+      source: "closed",
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": theme.color.closed, "line-width": 22, "line-opacity": 0.01 },
+    });
   }
   if (!map.getSource("zones")) {
     map.addSource("zones", { type: "geojson", data: emptyCollection() });
@@ -173,13 +184,18 @@ export function FloodMap({
   progressRef,
   paddingRight,
   mobile,
+  showControls = true,
   onSample,
+  onPlace,
+  onClosed,
+  onArea,
 }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const puckRef = useRef<maplibregl.Marker | null>(null);
   const pinsRef = useRef<maplibregl.Marker[]>([]);
   const fitted = useRef("");
+  const controlRef = useRef<maplibregl.NavigationControl | null>(null);
   const propsRef = useRef({
     center,
     routeCoords,
@@ -195,7 +211,11 @@ export function FloodMap({
     progressRef,
     paddingRight,
     mobile,
+    showControls,
     onSample,
+    onPlace,
+    onClosed,
+    onArea,
   });
   propsRef.current = {
     center,
@@ -212,7 +232,11 @@ export function FloodMap({
     progressRef,
     paddingRight,
     mobile,
+    showControls,
     onSample,
+    onPlace,
+    onClosed,
+    onArea,
   };
   const paintRef = useRef<(map: maplibregl.Map) => void>(() => {});
 
@@ -229,9 +253,13 @@ export function FloodMap({
       attributionControl: { compact: true },
       canvasContextAttributes: { antialias: true },
     });
-    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true, showCompass: true }), "top-left");
     const puckEl = document.createElement("div");
     puckEl.className = "puck";
+    puckEl.addEventListener("click", (event) => {
+      event.stopPropagation();
+      event.preventDefault();
+      propsRef.current.onArea?.();
+    });
     const cone = document.createElement("div");
     cone.className = "puck-cone";
     const dot = document.createElement("div");
@@ -242,6 +270,68 @@ export function FloodMap({
       .addTo(map);
     mapRef.current = map;
     puckRef.current = puck;
+    (map.getContainer() as HTMLElement & { __floodMap?: maplibregl.Map }).__floodMap = map;
+    let ignoreClick = false;
+    const openAt = (lngLat: { lat: number; lng: number }, point: { x: number; y: number }, retried = false) => {
+      const current = propsRef.current;
+      if (!map.isStyleLoaded()) {
+        if (!retried) map.once("idle", () => openAt(lngLat, point, true));
+        return;
+      }
+      if (map.getLayer("closed-hit")) {
+        const hits = map.queryRenderedFeatures([point.x, point.y], { layers: ["closed-hit"] });
+        const roadId = hits.find((hit) => hit.properties?.road_id)?.properties?.road_id;
+        if (roadId) {
+          current.onClosed?.(String(roadId));
+          return;
+        }
+      }
+      let name = "This point";
+      for (const feature of map.queryRenderedFeatures([point.x, point.y])) {
+        const label = feature.properties?.name || feature.properties?.name_en || feature.properties?.ref;
+        if (label && feature.layer?.id !== "closed-glow" && feature.layer?.id !== "closed-hit") {
+          name = String(label);
+          break;
+        }
+      }
+      current.onPlace?.({ lat: lngLat.lat, lon: lngLat.lng, name });
+    };
+    map.on("click", (event) => {
+      if (ignoreClick) {
+        ignoreClick = false;
+        return;
+      }
+      openAt(event.lngLat, event.point);
+    });
+    map.on("contextmenu", (event) => {
+      event.preventDefault();
+      ignoreClick = true;
+      openAt(event.lngLat, event.point);
+    });
+    const canvas = map.getCanvas();
+    let holdTimer = 0;
+    let holdStart = { x: 0, y: 0 };
+    const pointFrom = (event: PointerEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    };
+    const cancelHold = () => window.clearTimeout(holdTimer);
+    canvas.addEventListener("pointerdown", (event) => {
+      ignoreClick = false;
+      holdStart = pointFrom(event);
+      cancelHold();
+      holdTimer = window.setTimeout(() => {
+        ignoreClick = true;
+        const point = holdStart;
+        openAt(map.unproject([point.x, point.y]), point);
+      }, 480);
+    });
+    canvas.addEventListener("pointerup", cancelHold);
+    canvas.addEventListener("pointercancel", cancelHold);
+    canvas.addEventListener("pointermove", (event) => {
+      const point = pointFrom(event);
+      if (Math.hypot(point.x - holdStart.x, point.y - holdStart.y) > 8) cancelHold();
+    });
     map.on("load", () => {
       map.resize();
       paintRef.current(map);
@@ -285,7 +375,7 @@ export function FloodMap({
       type: "FeatureCollection",
       features: current.closed.map((road) => ({
         type: "Feature",
-        properties: { name: road.name },
+        properties: { name: road.name, road_id: road.road_id },
         geometry: { type: "LineString", coordinates: road.coordinates },
       })),
     });
@@ -312,6 +402,11 @@ export function FloodMap({
     pinsRef.current.forEach((marker) => marker.remove());
     pinsRef.current = current.pins.map((pin) => {
       const el = pinElement(pin, pin.id === current.activePinId);
+      el.addEventListener("click", (event) => {
+        event.stopPropagation();
+        event.preventDefault();
+        propsRef.current.onPlace?.({ lat: pin.lat, lon: pin.lon, name: pin.name, pinId: pin.id });
+      });
       return new maplibregl.Marker({ element: el, anchor: "bottom" }).setLngLat([pin.lon, pin.lat]).addTo(map);
     });
 
@@ -344,6 +439,19 @@ export function FloodMap({
     if (!map || !map.isStyleLoaded()) return;
     paintRef.current(map);
   }, [routeKey, closed, zones, pins, activePinId, flood, paddingRight, mobile, navigating, destPoint]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (controlRef.current) {
+      map.removeControl(controlRef.current);
+      controlRef.current = null;
+    }
+    if (!showControls) return;
+    const control = new maplibregl.NavigationControl({ visualizePitch: true, showCompass: true });
+    map.addControl(control, mobile ? "top-right" : "top-left");
+    controlRef.current = control;
+  }, [showControls, mobile]);
 
   useEffect(() => {
     if (!navigating || !simulate) return;

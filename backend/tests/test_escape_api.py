@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from floodline.agents.llm_planner import plan_with_llm
 from floodline.agents.planner import plan
 from floodline.api import app
-from floodline.escape import _convex_hull
+from floodline.escape import _convex_hull, closure_kind
 from floodline.events import collect_events, decision_event, query_label
 from floodline.navigation import build_steps
 from floodline.stubs import geocode_report, reroute_affected, route_to_shelter, snap_point
@@ -224,3 +224,31 @@ def test_convex_hull_closes_the_ring():
     ring = _convex_hull([(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (0.2, 0.2)])
     assert ring[0] == ring[-1]
     assert len(ring) == 4
+
+
+def test_closure_kind_names_the_report():
+    assert closure_kind("Waterlogging on Shraddhanand Road") == "Waterlogging"
+    assert closure_kind("The road is under water") == "Flooded road"
+    assert closure_kind("") == "Closure"
+
+
+def test_reopen_endpoint_writes_through_the_helper(monkeypatch):
+    seen = {}
+
+    def fake(**kwargs):
+        seen.update(kwargs)
+        return {"ok": True, "reopened": ["shraddhanand"], "decision_id": "dec-reopen"}
+
+    monkeypatch.setattr("floodline.api.reopen_roads", fake)
+    response = TestClient(app).post(
+        "/api/road/reopen",
+        json={"road_id": "shraddhanand", "graph": "fl-p1915-p07285"},
+    )
+    assert response.status_code == 200
+    assert response.json()["decision_id"] == "dec-reopen"
+    assert seen["road_id"] == "shraddhanand"
+    assert seen["clear_test"] is False
+
+    cleared = TestClient(app).post("/api/road/reopen", json={"clear_test": True, "graph": "valencia"})
+    assert cleared.status_code == 200
+    assert seen["clear_test"] is True
