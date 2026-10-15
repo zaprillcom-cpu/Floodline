@@ -9,17 +9,32 @@ Floodline is a solo entry to WeMakeDevs × FalkorDB Graph Hacks (Tracks 1 and 2)
 
 The author of the entry is responsible for reviewing, running, and explaining the graph model, the Cypher, and the architecture.
 
-## Citizen escape — backend (AI-assist)
+## Citizen escape (PLAN_V2)
 
-Cursor Grok 4.7 added the following, from the tasks tagged AI-assist in PLAN_V2:
+Cursor Grok 4.7 implemented every task tagged **AI-assist**. Sahil's tasks are stubs: a signature, a docstring, and `# TODO(Sahil)`, falling back to code that already existed. Sahil reviews this file.
 
-- Moved the Valencia extract to `backend/data/osm/valencia_corridor.json` so the Railway service (root directory `backend`) contains it, and added `POST /api/admin/load-valencia`, guarded by the `ADMIN_TOKEN` environment variable.
-- `GET /api/stream` (SSE) and `GET /api/feed` emit Task, Decision, and Route events already stored on those nodes, with a heartbeat every 15 seconds.
-- Turn-by-turn step text in `backend/floodline/navigation.py` (edge name and bearing). `GET /api/route` returns a GeoJSON line, steps, and an ETA.
-- The citizen web app: full-screen MapLibre (OpenFreeMap dark, fill-extrusion buildings), design tokens in `web/lib/theme.ts`, simulated GPS and a turn banner, a live Scout/Dispatcher/Analyst feed over the SSE stream, a desktop side HUD, a separate mobile layout (bottom tabs Escape / Report / Live / Me and a three-stop bottom sheet), flood vision, and a Me tab stored in `localStorage`.
-- Stubs only, each marked `TODO(Sahil)`, for the Shelter/Citizen model, `route_to_shelter`, reroute fan-out, snap, shelter WCC, the LLM planner, and report geocoding. They fall back to the existing CCH → A* → SPpaths router or the keyword planner. See `backend/floodline/stubs.py` and `backend/floodline/agents/llm_planner.py`.
+### Built by Cursor Grok 4.7
 
-Sahil still writes and explains those graph operations. The fallbacks exist so the map can draw a line before that work lands.
+- `backend/data/osm/valencia_corridor.json` lives inside the Railway service root (`backend`). `POST /api/admin/load-valencia` is guarded by `ADMIN_TOKEN`.
+- `GET /api/stream` and `GET /api/feed` emit Task, Decision, and Route events, with a heartbeat every 15 seconds.
+- Turn-by-turn steps from edge names and bearings (`backend/floodline/navigation.py`). `GET /api/route` returns GeoJSON, steps, and an ETA.
+- Full-screen MapLibre map, OpenFreeMap dark style, `fill-extrusion` buildings (`web/components/FloodMap.tsx`).
+- Design tokens in `web/lib/theme.ts`.
+- Simulated GPS, turn banner, live agent cards, desktop HUD, mobile tabs and bottom sheet, flood-vision tint, Me tab in `localStorage`.
+
+### Left for Sahil
+
+| Function | File |
+|---|---|
+| `ensure_shelter_citizen_model` | `backend/floodline/stubs.py` |
+| `snap_point` | `backend/floodline/stubs.py` |
+| `route_to_shelter` | `backend/floodline/stubs.py` |
+| `geocode_report` | `backend/floodline/stubs.py` |
+| `reroute_affected` | `backend/floodline/stubs.py` |
+| `shelter_reachability` | `backend/floodline/stubs.py` |
+| `plan_with_llm` | `backend/floodline/agents/llm_planner.py` |
+
+The demo video is also Sahil's. No API keys are committed. `ADMIN_TOKEN` is set only on Railway.
 
 ## Runtime model inside the product
 
