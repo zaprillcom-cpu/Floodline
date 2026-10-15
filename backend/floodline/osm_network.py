@@ -19,9 +19,11 @@ from floodline.network import haversine_m
 # west, south, east, north. osmnx 2.x graph_from_bbox takes this order.
 BBOX = (-0.430, 39.415, -0.372, 39.458)
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-EXTRACT_PATH = REPO_ROOT / "data" / "osm" / "valencia_corridor.json"
-CACHE_DIR = REPO_ROOT / "data" / "cache"
+# Railway's service root is `backend/`, so the extract has to live here
+# (backend/data/osm), not at the repository root.
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+EXTRACT_PATH = BACKEND_ROOT / "data" / "osm" / "valencia_corridor.json"
+CACHE_DIR = BACKEND_ROOT / "data" / "cache"
 
 # veh/h for one direction. Defaults by OSM highway class, not measured counts.
 HIGHWAY_CAPACITY = {

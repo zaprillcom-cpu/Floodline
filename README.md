@@ -30,7 +30,7 @@ Checked on v4.22.0: `db.idx.cch.query`, `algo.AStar`, and `algo.SPpaths` all ret
 | Intersections | 2526 |
 | Directed `ROAD` edges | 4742, each mirrored by `PASSABLE` while open |
 | Districts | Nearest town centroid, not an official boundary. Paiporta 654, Alfafar 259, Sedaví 504, Benetússer 365, Valencia 744. Populations are synthetic. |
-| Extract | `data/osm/valencia_corridor.json` (ODbL, © OpenStreetMap contributors). `--refresh` re-downloads from Overpass. |
+| Extract | `backend/data/osm/valencia_corridor.json` (ODbL, © OpenStreetMap contributors). Railway's service root is `backend/`, so the file ships with the API. `--refresh` re-downloads from Overpass. |
 
 Checked on FalkorDB **4.22.0** (`MODULE LIST` reports version `42200`, and the container log says `Starting up FalkorDB version 4.22.0`):
 

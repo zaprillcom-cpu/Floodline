@@ -4,7 +4,8 @@ from floodline.osm_network import EXTRACT_PATH, bbox_dict
 
 
 def test_committed_valencia_extract_matches_the_documented_bbox():
-    assert EXTRACT_PATH.is_file(), "data/osm/valencia_corridor.json is the offline OSM extract"
+    assert EXTRACT_PATH.is_file(), "backend/data/osm/valencia_corridor.json is the offline OSM extract"
+    assert EXTRACT_PATH.parts[-4:] == ("backend", "data", "osm", "valencia_corridor.json")
     data = json.loads(EXTRACT_PATH.read_text(encoding="utf-8"))
     assert data["source"] == "osm"
     assert data["license"] == "ODbL-1.0"

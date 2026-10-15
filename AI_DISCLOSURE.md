@@ -9,6 +9,17 @@ Floodline is a solo entry to WeMakeDevs × FalkorDB Graph Hacks (Tracks 1 and 2)
 
 The author of the entry is responsible for reviewing, running, and explaining the graph model, the Cypher, and the architecture.
 
+## Citizen escape — backend (AI-assist)
+
+Cursor Grok 4.7 added the following, from the tasks tagged AI-assist in PLAN_V2:
+
+- Moved the Valencia extract to `backend/data/osm/valencia_corridor.json` so the Railway service (root directory `backend`) contains it, and added `POST /api/admin/load-valencia`, guarded by the `ADMIN_TOKEN` environment variable.
+- `GET /api/stream` (SSE) and `GET /api/feed` emit Task, Decision, and Route events already stored on those nodes, with a heartbeat every 15 seconds.
+- Turn-by-turn step text in `backend/floodline/navigation.py` (edge name and bearing). `GET /api/route` returns a GeoJSON line, steps, and an ETA.
+- Stubs only, each marked `TODO(Sahil)`, for the Shelter/Citizen model, `route_to_shelter`, reroute fan-out, snap, shelter WCC, the LLM planner, and report geocoding. They fall back to the existing CCH → A* → SPpaths router or the keyword planner. See `backend/floodline/stubs.py` and `backend/floodline/agents/llm_planner.py`.
+
+Sahil still writes and explains those graph operations. The fallbacks exist so the map can draw a line before that work lands.
+
 ## Runtime model inside the product
 
 There is **no live LLM** in this slice. `backend/floodline/agents/planner.py` is a deterministic keyword stub:
