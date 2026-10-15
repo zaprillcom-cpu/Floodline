@@ -299,6 +299,12 @@ button { cursor: pointer; }
 
 .row { display: flex; flex-direction: column; gap: 8px; }
 
+.city-picker { display: flex; flex-direction: column; gap: 8px; }
+
+.city-row { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.city-row .btn { flex: 1 1 30%; height: 42px; min-width: 0; }
+
 .btn {
   height: 48px;
   border: 0;

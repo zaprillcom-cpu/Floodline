@@ -4,7 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { DesktopHud } from "@/components/DesktopHud";
 import { MobileShell } from "@/components/MobileShell";
-import { fetchFeed, fetchOverlay, fetchRoute, fetchZones, fileReport, loadArea, loadValenciaDemo, type AreaJob } from "@/lib/api";
+import { fetchFeed, fetchOverlay, fetchRoute, fetchZones, fileReport, loadArea, loadCity, type AreaJob } from "@/lib/api";
+import { bundledCity, type CitySlug } from "@/lib/cities";
 import {
   PAIPORTA,
   bannerFor,
@@ -46,6 +47,7 @@ export function EscapeApp() {
   const [place, setPlace] = useState("Nearby");
   const [mappingTitle, setMappingTitle] = useState("Mapping streets around you…");
   const [stageText, setStageText] = useState("Finding your position");
+  const [chooser, setChooser] = useState(0);
   const progressRef = useRef(0);
   const poseRef = useRef(pose);
   const seen = useRef(new Set<string>());
@@ -53,7 +55,7 @@ export function EscapeApp() {
   const armed = useRef(false);
   const routeRef = useRef<RoutePlan | null>(null);
   const graphRef = useRef<string | null>(null);
-  const modeRef = useRef<"local" | "valencia" | null>(null);
+  const modeRef = useRef<"local" | CitySlug | null>(null);
   const loadGen = useRef(0);
   const progressCap = useRef(18);
   const rerouteRef = useRef<(lat: number, lon: number) => void>(() => {});
@@ -229,22 +231,26 @@ export function EscapeApp() {
       setPhase("ready");
     } catch (exc) {
       if (loadGen.current !== gen) return;
-      setPhase("choose");
-      setMapProgress(0);
+      revealCities();
       const message = exc instanceof Error ? exc.message : "Could not map this area";
       setError(
-        /valencia demo/i.test(message)
-          ? message
-          : `${message} Open the Valencia demo, which uses the bundled extract.`,
+        /bundled city/i.test(message) ? message : `${message} Choose a bundled city below.`,
       );
     }
+  }
+
+  function revealCities() {
+    setPhase("choose");
+    setMapProgress(0);
+    setTab("escape");
+    setChooser((value) => value + 1);
   }
 
   function locate() {
     const geo = navigator.geolocation;
     if (!geo) {
-      setPhase("choose");
-      setError("This browser has no location. Open the Valencia demo.");
+      revealCities();
+      setError("This browser has no location. Choose a bundled city below.");
       return;
     }
     setMappingTitle("Mapping streets around you…");
@@ -256,9 +262,8 @@ export function EscapeApp() {
         void loadAround(position.coords.latitude, position.coords.longitude);
       },
       () => {
-        setPhase("choose");
-        setMapProgress(0);
-        setError("Location was denied. Open the Valencia demo to use the bundled extract.");
+        revealCities();
+        setError("Location was denied. Choose a bundled city below.");
       },
       { enableHighAccuracy: true, timeout: 8000, maximumAge: 15000 },
     );
@@ -333,35 +338,44 @@ export function EscapeApp() {
     }
   }
 
-  async function loadDemo() {
+  async function openCity(slug: CitySlug) {
+    const city = bundledCity(slug);
+    if (!city) return;
     loadGen.current += 1;
-    modeRef.current = "valencia";
-    setPlace("Valencia");
-    setMappingTitle("Loading the Valencia demo…");
-    setStageText("Reading the bundled Valencia extract");
+    modeRef.current = slug;
+    setPlace(city.label);
+    setMappingTitle(`Loading ${city.label}…`);
+    setStageText(`Reading the bundled ${city.label} extract`);
     progressCap.current = 70;
     setPhase("mapping");
     setMapProgress(12);
     setError(null);
     setNavigating(false);
-    const here = { ...PAIPORTA, bearing: 0 };
+    const here = { lat: city.lat, lon: city.lon, bearing: 0 };
     poseRef.current = here;
     setPose(here);
     try {
-      const area = await loadValenciaDemo();
+      const area = await loadCity(slug);
+      if (area.center) {
+        const next = { lat: area.center.lat, lon: area.center.lon, bearing: 0 };
+        poseRef.current = next;
+        setPose(next);
+        here.lat = next.lat;
+        here.lon = next.lon;
+      }
+      if (area.place) setPlace(area.place);
       adoptGraph(area.graph);
       const [map, feed] = await Promise.all([fetchOverlay(area.graph), fetchFeed(0, area.graph)]);
       setOverlay(map);
       remember(feed.events, false);
       liveAfter.current = feed.cursor;
       armed.current = true;
-      await refreshRoute(PAIPORTA.lat, PAIPORTA.lon, "load", area.graph);
+      await refreshRoute(here.lat, here.lon, "load", area.graph);
       setMapProgress(100);
       setPhase("ready");
     } catch (exc) {
-      setPhase("choose");
-      setMapProgress(0);
-      setError(exc instanceof Error ? exc.message : "Valencia demo failed");
+      revealCities();
+      setError(exc instanceof Error ? exc.message : `${city.label} failed to load`);
     }
   }
 
@@ -382,7 +396,7 @@ export function EscapeApp() {
       }
       if (cancelled) return;
       if (permission === "denied") {
-        setPhase("choose");
+        revealCities();
         return;
       }
       setMappingTitle("Mapping streets around you…");
@@ -394,8 +408,7 @@ export function EscapeApp() {
         },
         () => {
           if (cancelled) return;
-          setPhase("choose");
-          setMapProgress(0);
+          revealCities();
         },
         { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 },
       );
@@ -439,11 +452,13 @@ export function EscapeApp() {
     onLocate: () => void locate(),
     onFlood: () => void toggleFlood(),
     onRetry: () => {
-      if (modeRef.current === "valencia") void loadDemo();
-      else if (modeRef.current === "local") void loadAround(poseRef.current.lat, poseRef.current.lon);
+      const mode = modeRef.current;
+      if (mode && mode !== "local") void openCity(mode);
+      else if (mode === "local") void loadAround(poseRef.current.lat, poseRef.current.lon);
       else locate();
     },
-    onDemo: () => void loadDemo(),
+    onCity: (slug: CitySlug) => void openCity(slug),
+    chooser,
     onGo: goToPlace,
     place,
     mapping: phase === "mapping" || phase === "boot",

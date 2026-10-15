@@ -51,17 +51,17 @@ curl -X POST https://floodline-production.up.railway.app/api/admin/load-valencia
 
 ## Around you
 
-The map asks for the browser's location on first load. If permission is already granted, it loads that tile. Otherwise it waits for **Use my location** or **Valencia demo**.
+The map asks for the browser's location on first load. If permission is already granted, it loads that tile. Otherwise it waits for **Use my location** or a bundled city (Valencia, Mumbai, New York). The same picker is in the desktop HUD and the mobile Escape tab. If a live download fails, the picker is shown immediately.
 
-`POST /api/area/load` takes `{ "lat", "lon", "radius_m" }` and returns immediately with `{ "job_id", "status": "queued" }`. `radius_m` defaults to 2000 and is rejected above 5000. It does **not** use `ADMIN_TOKEN`. Poll `GET /api/area/status?job_id=…` for `queued`, `fetching`, `indexing`, `ready`, or `failed`. The worker downloads streets with one Overpass query (`way["highway"]` plus its nodes), 20 seconds per mirror, then one retry on `https://overpass.kumi.systems/api`. It does not use OSMnx's status-endpoint pause. The committed Valencia file is never overwritten.
+`POST /api/area/load` takes `{ "lat", "lon", "radius_m" }` and returns immediately with `{ "job_id", "status": "queued" }`. `radius_m` defaults to 2000 and is rejected above 5000. It does **not** use `ADMIN_TOKEN`. Poll `GET /api/area/status?job_id=…` for `queued`, `fetching`, `indexing`, `ready`, or `failed`. The worker downloads streets with one Overpass query (`way["highway"]` plus its nodes). Every request sends `User-Agent: Floodline/1.0 (https://github.com/zaprillcom-cpu/Floodline)`. Mirrors are tried in order — `overpass-api.de`, `overpass.kumi.systems`, `overpass.private.coffee`, then `maps.mail.ru` — sharing a 40 second budget (10 seconds each) with a short backoff between failures. It does not use OSMnx's status-endpoint pause. Bundled extracts are never overwritten.
 
 The graph name is a 0.05° tile, for example `fl-p3945-n00040` for 39.45, −0.40. A second load of that tile is read from FalkorDB and does not call Overpass. Uncached loads are limited to 4 per minute per client (`X-Forwarded-For`, otherwise the peer address). The loader builds the CCH index, then passes up to 8 OSM shelter candidates (`amenity=school|community_centre|social_facility`, `leisure=sports_centre`) into `ensure_shelter_citizen_model`. That stub is still Sahil's. The fallback attaches them with `ACCESS`, not `NEAR`.
 
 `GET /api/route`, `/api/escape/overlay`, `/api/escape/zones`, `/api/feed`, and `/api/stream` take `?graph=`. Reports may send the same id in the JSON body. Unknown ids are 400.
 
-`POST /api/area/valencia` loads `backend/data/osm/valencia_corridor.json` into the graph `valencia` with no Overpass call and no admin token. If that graph already has intersections it is left as-is, so the demo video does not depend on a live download.
+`POST /api/area/city/{slug}` loads a bundled extract for `valencia`, `mumbai`, or `nyc`. `POST /api/area/valencia` is the same Valencia load. Neither calls Overpass or requires an admin token. A graph that already has intersections is left as-is. Mumbai is about 3 km around 19.076, 72.877. New York is about 3 km around lower Manhattan (40.7074, −74.0113). Both files were cropped with osmium from Geofabrik PBF extracts (`asia/india/western-zone` and `north-america/us/new-york`) after public Overpass returned 500/502/504, then passed through the same `prepare_drive_graph` pipeline as `valencia_corridor.json`. Each file includes OSM shelter candidates and hospitals. Route, report, and SSE take `graph=mumbai` and `graph=nyc` the same way they take `valencia`.
 
-If Overpass fails, the job status is `failed` and the map says so, with the Valencia demo one tap away. The map also stops if `queued` or `fetching` does not change for 45 seconds, so the spinner cannot sit there forever. `POST /api/area/valencia` is unchanged.
+If Overpass fails, the job status is `failed` and the map shows the city picker straight away. The map also stops if `queued` or `fetching` does not change for 45 seconds, so the spinner cannot sit there forever.
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/area/load \
@@ -72,10 +72,16 @@ curl "http://127.0.0.1:8000/api/area/status?job_id=JOB"
 
 curl -X POST http://127.0.0.1:8000/api/area/valencia
 
+curl -X POST http://127.0.0.1:8000/api/area/city/mumbai
+
+curl -X POST http://127.0.0.1:8000/api/area/city/nyc
+
 curl 'http://127.0.0.1:8000/api/route?lat=39.4294&lon=-0.4183&graph=valencia'
+
+curl 'http://127.0.0.1:8000/api/route?lat=19.076&lon=72.877&graph=mumbai'
 ```
 
-Limits: radius 50–5000 m (default 2000), tile 0.05°, 4 uncached downloads per minute, 8 provisional shelters, 20 s per Overpass mirror and one retry. An area with no shelter candidates has nowhere to route until Sahil's model, or the Valencia demo, supplies one. `ADMIN_TOKEN` still guards only `POST /api/admin/load-valencia`.
+Limits: radius 50–5000 m (default 2000), tile 0.05°, 4 uncached downloads per minute, 8 provisional shelters, four Overpass mirrors sharing a 40 s budget. An area with no shelter candidates has nowhere to route until Sahil's model, or a bundled city, supplies one. `ADMIN_TOKEN` still guards only `POST /api/admin/load-valencia`.
 
 **Tracks:** Track 1 — Agents That Act on Connected Data (primary). Track 2 — Agent Memory & Coordination.
 
