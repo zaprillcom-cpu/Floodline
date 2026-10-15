@@ -17,7 +17,7 @@ const SPEED_MPS = 18;
 type Zone = { name: string; polygon: [number, number][] };
 
 type Props = {
-  center: { lat: number; lon: number };
+  center: { lat: number; lon: number; bearing?: number };
   routeCoords: LonLat[] | null;
   routeKey: string;
   closed: ClosedRoad[];
@@ -26,6 +26,8 @@ type Props = {
   activePinId: string | null;
   flood: boolean;
   navigating: boolean;
+  simulate?: boolean;
+  destPoint?: { lat: number; lon: number } | null;
   progressRef: MutableRefObject<number>;
   paddingRight: number;
   mobile: boolean;
@@ -140,13 +142,19 @@ function pinElement(pin: Pin, active: boolean): HTMLButtonElement {
   const el = document.createElement("button");
   el.type = "button";
   el.className = active ? `pin pin-${pin.kind} pin-active` : `pin pin-${pin.kind}`;
-  el.setAttribute("aria-label", pin.name);
+  el.setAttribute("aria-label", active ? `Destination, ${pin.name}` : pin.name);
   const glyph = document.createElement("span");
   glyph.className = "pin-glyph";
   const label = document.createElement("span");
   label.className = "pin-label";
   label.textContent = pin.name;
   el.append(glyph, label);
+  if (active) {
+    const badge = document.createElement("span");
+    badge.className = "pin-badge";
+    badge.textContent = "Destination";
+    el.append(badge);
+  }
   return el;
 }
 
@@ -160,6 +168,8 @@ export function FloodMap({
   activePinId,
   flood,
   navigating,
+  simulate = true,
+  destPoint = null,
   progressRef,
   paddingRight,
   mobile,
@@ -180,6 +190,8 @@ export function FloodMap({
     activePinId,
     flood,
     navigating,
+    simulate,
+    destPoint,
     progressRef,
     paddingRight,
     mobile,
@@ -195,6 +207,8 @@ export function FloodMap({
     activePinId,
     flood,
     navigating,
+    simulate,
+    destPoint,
     progressRef,
     paddingRight,
     mobile,
@@ -307,6 +321,9 @@ export function FloodMap({
         (box, coord) => box.extend(coord),
         new maplibregl.LngLatBounds(coords[0], coords[0]),
       );
+      const active = current.pins.find((pin) => pin.id === current.activePinId);
+      if (active) bounds.extend([active.lon, active.lat]);
+      if (current.destPoint) bounds.extend([current.destPoint.lon, current.destPoint.lat]);
       map.fitBounds(bounds, {
         padding: {
           top: 90,
@@ -326,10 +343,10 @@ export function FloodMap({
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;
     paintRef.current(map);
-  }, [routeKey, closed, zones, pins, activePinId, flood, paddingRight, mobile, navigating]);
+  }, [routeKey, closed, zones, pins, activePinId, flood, paddingRight, mobile, navigating, destPoint]);
 
   useEffect(() => {
-    if (!navigating) return;
+    if (!navigating || !simulate) return;
     let frame = 0;
     let last = performance.now();
     let lastEmit = 0;
@@ -365,7 +382,24 @@ export function FloodMap({
     };
     frame = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(frame);
-  }, [navigating]);
+  }, [navigating, simulate]);
+
+  useEffect(() => {
+    if (!navigating || simulate) return;
+    const puck = puckRef.current;
+    const map = mapRef.current;
+    if (!puck || !map) return;
+    puck.setLngLat([center.lon, center.lat]);
+    if (typeof center.bearing === "number") puck.setRotation(center.bearing);
+    map.easeTo({
+      center: [center.lon, center.lat],
+      bearing: typeof center.bearing === "number" ? center.bearing : map.getBearing(),
+      pitch: 64,
+      zoom: Math.max(map.getZoom(), 16.3),
+      duration: 700,
+      essential: true,
+    });
+  }, [navigating, simulate, center.lat, center.lon, center.bearing]);
 
   useEffect(() => {
     if (navigating) return;

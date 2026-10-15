@@ -29,13 +29,15 @@ from floodline.osm_network import (
     read_extract,
     snap_facility,
 )
+from floodline.regions import crop_tile, region_by_slug, region_containing
 
 TILE_DEG = 0.05
 VALENCIA_GRAPH = "valencia"
 GRAPH_ID_RE = re.compile(r"^fl-[pn]\d{4}-[pn]\d{5}$")
 
-# Bundled extracts. Valencia keeps its existing file. Mumbai and New York were
-# cropped from Geofabrik when public Overpass was down. Graph ids match slugs.
+# City picker metadata. Valencia's narrative demo still uses the corridor JSON.
+# Mumbai and New York centres are the offline-region centres (Goregaon, midtown).
+# Street data for those cities is the SQLite region, cropped per tile in load_citizen_area.
 CITIES: dict[str, dict] = {
     "valencia": {
         "graph": "valencia",
@@ -48,17 +50,17 @@ CITIES: dict[str, dict] = {
     "mumbai": {
         "graph": "mumbai",
         "place": "Mumbai",
-        "lat": 19.076,
-        "lon": 72.877,
-        "path": BACKEND_ROOT / "data" / "osm" / "mumbai.json",
+        "lat": 19.1663,
+        "lon": 72.8526,
+        "path": BACKEND_ROOT / "data" / "regions" / "mumbai.sqlite",
         "callsign": "M-1",
     },
     "nyc": {
         "graph": "nyc",
         "place": "New York",
-        "lat": 40.7074,
-        "lon": -74.0113,
-        "path": BACKEND_ROOT / "data" / "osm" / "nyc.json",
+        "lat": 40.758,
+        "lon": -73.9855,
+        "path": BACKEND_ROOT / "data" / "regions" / "manhattan.sqlite",
         "callsign": "NY-1",
     },
 }
@@ -230,12 +232,47 @@ def snap_shelters(nodes: list[dict], candidates: list[dict]) -> list[dict]:
     return snapped
 
 
-def persist_area(settings: Settings, prepared: dict, candidates: list[dict], *, origin: str) -> dict:
+def persist_area(
+    settings: Settings,
+    prepared: dict,
+    candidates: list[dict],
+    *,
+    origin: str,
+    hospitals: list[dict] | None = None,
+    unit: dict | None = None,
+) -> dict:
     """Delete the tile graph, bulk-load it, build CCH, and hand shelters to the stub."""
-    from floodline.bulk import load_records
+    from floodline.bulk import attach_facilities, load_records
     from floodline.db import connect
     from floodline.stubs import ensure_shelter_citizen_model
 
+    facilities: list[FacilitySpec] = []
+    for index, item in enumerate(hospitals or []):
+        facilities.append(
+            FacilitySpec(
+                "hospital",
+                str(item.get("id") or f"hospital-{index}")[:80],
+                str(item.get("name") or "Hospital")[:120],
+                float(item["lat"]),
+                float(item["lon"]),
+                beds_total=40,
+                beds_free=12,
+            )
+        )
+    if unit is not None:
+        facilities.append(
+            FacilitySpec(
+                "unit",
+                str(unit.get("id") or "unit")[:80],
+                str(unit.get("callsign") or "A-7"),
+                float(unit["lat"]),
+                float(unit["lon"]),
+                callsign=str(unit.get("callsign") or "A-7"),
+            )
+        )
+    snaps = [snap_facility(prepared["nodes"], spec) for spec in facilities]
+    if snaps:
+        apply_facility_labels(prepared, snaps)
     db = connect(settings, socket_timeout=180)
     graph = db.select_graph(settings.graph)
     try:
@@ -244,6 +281,8 @@ def persist_area(settings: Settings, prepared: dict, candidates: list[dict], *, 
         pass
     graph = db.select_graph(settings.graph)
     loaded = load_records(graph, prepared)
+    if snaps:
+        attach_facilities(graph, snaps)
     snapped = snap_shelters(prepared["nodes"], candidates)
     model = ensure_shelter_citizen_model(graph, snapped)
     for name, role in (("Scout", "closures"), ("Dispatcher", "routing")):
@@ -286,9 +325,40 @@ def load_citizen_area(
         raise ValueError(f"radius_m must be between {MIN_RADIUS_M} and {MAX_RADIUS_M}")
     base = settings or Settings.from_env()
     cfg = base.for_graph(tile_graph_id(lat, lon))
+    region = region_containing(lat, lon)
     if area_is_cached(cfg):
         _report(on_status, "indexing", "Using streets already loaded for this area.")
-        return read_cached_area(cfg)
+        payload = read_cached_area(cfg)
+        payload["center"] = {"lat": lat, "lon": lon}
+        if region is not None:
+            payload["place"] = region.place
+        return payload
+    if region is not None:
+        _report(on_status, "indexing", "Reading bundled streets.")
+        try:
+            prepared, shelters, hospitals = crop_tile(region, lat, lon, radius_m)
+        except Exception as exc:
+            raise OverpassFailed(
+                "Bundled streets for this area could not be loaded. Choose another bundled city."
+            ) from exc
+        _report(on_status, "indexing", "Building the CCH index.")
+        payload = persist_area(
+            cfg,
+            prepared,
+            shelters,
+            origin="offline",
+            hospitals=hospitals,
+            unit={
+                "id": f"{region.id}-unit",
+                "lat": lat,
+                "lon": lon,
+                "callsign": region.callsign,
+            },
+        )
+        payload["place"] = region.place
+        payload["center"] = {"lat": lat, "lon": lon}
+        payload["region"] = region.id
+        return payload
     enforce_rate_limit(client)
     _report(on_status, "fetching", "Downloading streets from OpenStreetMap.")
     bbox = radius_bbox(lat, lon, radius_m)
@@ -455,12 +525,16 @@ def load_bundled_city(slug: str, settings: Settings | None = None) -> dict:
     base = settings or Settings.from_env()
     if slug == "valencia":
         return _with_place(load_valencia_demo(base), spec)
-    cfg = base.for_graph(spec["graph"])
-    if area_is_cached(cfg):
-        payload = read_cached_area(cfg)
-        payload["origin"] = "cache"
-        return _with_place(payload, spec)
-    return install_city_graph(cfg, read_extract(spec["path"]), spec)
+    region = region_by_slug(slug)
+    if region is None:
+        raise UnknownCity(slug)
+    return load_citizen_area(
+        region.center_lat,
+        region.center_lon,
+        2500,
+        client="city",
+        settings=base,
+    )
 
 
 def load_valencia_demo(settings: Settings | None = None) -> dict:

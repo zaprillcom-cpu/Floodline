@@ -602,7 +602,58 @@ button { cursor: pointer; }
   box-shadow: 0 0 0 4px rgba(48, 209, 88, 0.25);
 }
 .pin-hospital .pin-glyph { background: var(--blue); box-shadow: 0 0 0 4px rgba(10, 132, 255, 0.25); }
-.pin-active .pin-glyph { background: var(--cyan); box-shadow: 0 0 0 6px rgba(100, 210, 255, 0.35); }
+.pin-active .pin-glyph {
+  width: 22px;
+  height: 22px;
+  background: var(--cyan);
+  box-shadow: 0 0 0 8px rgba(100, 210, 255, 0.45);
+}
+.pin-badge {
+  margin-top: 2px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--cyan);
+  color: #041018;
+  font-size: 10px;
+  font-weight: 720;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.dest-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(100, 210, 255, 0.1);
+  border: 1px solid rgba(100, 210, 255, 0.4);
+}
+.dest-card strong { font-size: 16px; letter-spacing: -0.03em; }
+.dest-card p { margin: 0; color: var(--secondary); font-size: 13px; }
+.dest-list { display: flex; flex-direction: column; gap: 6px; }
+.dest-option {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--stroke);
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.dest-option span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dest-option strong { font-size: 13px; color: var(--secondary); }
+.dest-option.current { border-color: rgba(100, 210, 255, 0.7); }
+.dest-option:disabled { cursor: default; opacity: 0.85; }
 .pin-label {
   max-width: 140px;
   padding: 3px 7px;

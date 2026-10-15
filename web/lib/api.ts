@@ -39,9 +39,15 @@ function withGraph(path: string, graph?: string | null): string {
   return `${path}${join}graph=${encodeURIComponent(graph)}`;
 }
 
-export function fetchRoute(lat: number, lon: number, graph?: string | null): Promise<RoutePlan> {
+export function fetchRoute(
+  lat: number,
+  lon: number,
+  graph?: string | null,
+  dest?: string | null,
+): Promise<RoutePlan> {
   const query = new URLSearchParams({ lat: String(lat), lon: String(lon) });
   if (graph) query.set("graph", graph);
+  if (dest) query.set("dest", dest);
   return send<RoutePlan>(`/api/route?${query.toString()}`);
 }
 
