@@ -1,0 +1,378 @@
+"use client";
+
+import { useEffect, useRef, type MutableRefObject } from "react";
+import * as maplibregl from "maplibre-gl";
+import "maplibre-gl/dist/maplibre-gl.css";
+
+if (typeof window !== "undefined") {
+  maplibregl.setWorkerUrl("/maplibre-gl-worker.js");
+}
+import { lineMetrics, pointAlong, type LonLat, type Pose } from "@/lib/geo";
+import { theme } from "@/lib/theme";
+import type { ClosedRoad, Pin } from "@/lib/types";
+
+const STYLE = "https://tiles.openfreemap.org/styles/dark";
+const SPEED_MPS = 18;
+
+type Zone = { name: string; polygon: [number, number][] };
+
+type Props = {
+  center: { lat: number; lon: number };
+  routeCoords: LonLat[] | null;
+  routeKey: string;
+  closed: ClosedRoad[];
+  zones: Zone[];
+  pins: Pin[];
+  activePinId: string | null;
+  flood: boolean;
+  navigating: boolean;
+  progressRef: MutableRefObject<number>;
+  paddingRight: number;
+  mobile: boolean;
+  onSample: (progress: number, pose: Pose) => void;
+};
+
+type FeatureCollection = {
+  type: "FeatureCollection";
+  features: Array<{
+    type: "Feature";
+    properties: Record<string, string>;
+    geometry:
+      | { type: "LineString"; coordinates: [number, number][] }
+      | { type: "Polygon"; coordinates: [number, number][][] };
+  }>;
+};
+
+function emptyCollection(): FeatureCollection {
+  return { type: "FeatureCollection", features: [] };
+}
+
+function addBuildings(map: maplibregl.Map, flood: boolean) {
+  const color = flood ? theme.color.buildingFlood : theme.color.building;
+  if (map.getLayer("floodline-3d-buildings")) {
+    map.setPaintProperty("floodline-3d-buildings", "fill-extrusion-color", color);
+    return;
+  }
+  if (!map.getSource("openmaptiles")) return;
+  const before = map.getStyle()?.layers?.find((layer: { type?: string; id: string }) => layer.type === "symbol")?.id;
+  map.addLayer(
+    {
+      id: "floodline-3d-buildings",
+      type: "fill-extrusion",
+      source: "openmaptiles",
+      "source-layer": "building",
+      minzoom: 14,
+      paint: {
+        "fill-extrusion-color": color,
+        "fill-extrusion-height": [
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          14,
+          0,
+          15.2,
+          ["coalesce", ["get", "render_height"], 10],
+        ],
+        "fill-extrusion-base": ["coalesce", ["get", "render_min_height"], 0],
+        "fill-extrusion-opacity": 0.94,
+      },
+    },
+    before,
+  );
+}
+
+function ensure(map: maplibregl.Map) {
+  if (!map.getSource("route")) {
+    map.addSource("route", { type: "geojson", data: emptyCollection() });
+    map.addLayer({
+      id: "route-casing",
+      type: "line",
+      source: "route",
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": theme.color.routeCasing, "line-width": 11, "line-opacity": 0.9 },
+    });
+    map.addLayer({
+      id: "route-line",
+      type: "line",
+      source: "route",
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": theme.color.route, "line-width": 5.5, "line-opacity": 0.95 },
+    });
+  }
+  if (!map.getSource("closed")) {
+    map.addSource("closed", { type: "geojson", data: emptyCollection() });
+    map.addLayer({
+      id: "closed-glow",
+      type: "line",
+      source: "closed",
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": theme.color.closed,
+        "line-width": 5,
+        "line-blur": 0.4,
+        "line-opacity": 0.9,
+      },
+    });
+  }
+  if (!map.getSource("zones")) {
+    map.addSource("zones", { type: "geojson", data: emptyCollection() });
+    map.addLayer({
+      id: "zone-fill",
+      type: "fill",
+      source: "zones",
+      paint: { "fill-color": theme.color.purple, "fill-opacity": 0.22 },
+    });
+    map.addLayer({
+      id: "zone-line",
+      type: "line",
+      source: "zones",
+      paint: { "line-color": theme.color.purple, "line-width": 1.5, "line-opacity": 0.8 },
+    });
+  }
+}
+
+function setData(map: maplibregl.Map, id: string, data: FeatureCollection) {
+  const source = map.getSource(id) as maplibregl.GeoJSONSource | undefined;
+  source?.setData(data);
+}
+
+function pinElement(pin: Pin, active: boolean): HTMLButtonElement {
+  const el = document.createElement("button");
+  el.type = "button";
+  el.className = active ? `pin pin-${pin.kind} pin-active` : `pin pin-${pin.kind}`;
+  el.setAttribute("aria-label", pin.name);
+  const glyph = document.createElement("span");
+  glyph.className = "pin-glyph";
+  const label = document.createElement("span");
+  label.className = "pin-label";
+  label.textContent = pin.name;
+  el.append(glyph, label);
+  return el;
+}
+
+export function FloodMap({
+  center,
+  routeCoords,
+  routeKey,
+  closed,
+  zones,
+  pins,
+  activePinId,
+  flood,
+  navigating,
+  progressRef,
+  paddingRight,
+  mobile,
+  onSample,
+}: Props) {
+  const ref = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<maplibregl.Map | null>(null);
+  const puckRef = useRef<maplibregl.Marker | null>(null);
+  const pinsRef = useRef<maplibregl.Marker[]>([]);
+  const fitted = useRef("");
+  const propsRef = useRef({
+    center,
+    routeCoords,
+    routeKey,
+    closed,
+    zones,
+    pins,
+    activePinId,
+    flood,
+    navigating,
+    progressRef,
+    paddingRight,
+    mobile,
+    onSample,
+  });
+  propsRef.current = {
+    center,
+    routeCoords,
+    routeKey,
+    closed,
+    zones,
+    pins,
+    activePinId,
+    flood,
+    navigating,
+    progressRef,
+    paddingRight,
+    mobile,
+    onSample,
+  };
+  const paintRef = useRef<(map: maplibregl.Map) => void>(() => {});
+
+  useEffect(() => {
+    if (!ref.current) return;
+    const map = new maplibregl.Map({
+      container: ref.current,
+      style: STYLE,
+      center: [center.lon, center.lat],
+      zoom: 15.6,
+      pitch: 58,
+      bearing: -16,
+      maxPitch: 72,
+      attributionControl: { compact: true },
+      canvasContextAttributes: { antialias: true },
+    });
+    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true, showCompass: true }), "top-left");
+    const puckEl = document.createElement("div");
+    puckEl.className = "puck";
+    const cone = document.createElement("div");
+    cone.className = "puck-cone";
+    const dot = document.createElement("div");
+    dot.className = "puck-dot";
+    puckEl.append(cone, dot);
+    const puck = new maplibregl.Marker({ element: puckEl, rotationAlignment: "map", pitchAlignment: "map" })
+      .setLngLat([center.lon, center.lat])
+      .addTo(map);
+    mapRef.current = map;
+    puckRef.current = puck;
+    map.on("load", () => {
+      map.resize();
+      paintRef.current(map);
+    });
+    const observer = new ResizeObserver(() => map.resize());
+    observer.observe(ref.current);
+    return () => {
+      observer.disconnect();
+      pinsRef.current.forEach((marker) => marker.remove());
+      pinsRef.current = [];
+      map.remove();
+      mapRef.current = null;
+      puckRef.current = null;
+    };
+    // The map is created once. Later props sync in the effect below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  paintRef.current = function paint(map: maplibregl.Map) {
+    const current = propsRef.current;
+    addBuildings(map, current.flood);
+    ensure(map);
+    const coords = current.routeCoords;
+    setData(
+      map,
+      "route",
+      coords && coords.length >= 2
+        ? {
+            type: "FeatureCollection",
+            features: [
+              {
+                type: "Feature",
+                properties: {},
+                geometry: { type: "LineString", coordinates: coords },
+              },
+            ],
+          }
+        : emptyCollection(),
+    );
+    setData(map, "closed", {
+      type: "FeatureCollection",
+      features: current.closed.map((road) => ({
+        type: "Feature",
+        properties: { name: road.name },
+        geometry: { type: "LineString", coordinates: road.coordinates },
+      })),
+    });
+    setData(map, "zones", {
+      type: "FeatureCollection",
+      features: current.flood
+        ? current.zones.map((zone) => ({
+            type: "Feature",
+            properties: { name: zone.name },
+            geometry: { type: "Polygon", coordinates: [zone.polygon] },
+          }))
+        : [],
+    });
+    map.setPaintProperty("closed-glow", "line-width", current.flood ? 12 : 5);
+    map.setPaintProperty("closed-glow", "line-blur", current.flood ? 8 : 0.4);
+    map.setPaintProperty("closed-glow", "line-opacity", current.flood ? 0.95 : 0.85);
+    map.setPadding({
+      top: 70,
+      bottom: current.mobile ? 200 : 40,
+      left: 24,
+      right: current.paddingRight,
+    });
+
+    pinsRef.current.forEach((marker) => marker.remove());
+    pinsRef.current = current.pins.map((pin) => {
+      const el = pinElement(pin, pin.id === current.activePinId);
+      return new maplibregl.Marker({ element: el, anchor: "bottom" }).setLngLat([pin.lon, pin.lat]).addTo(map);
+    });
+
+    if (coords && coords.length >= 2 && fitted.current !== current.routeKey && !current.navigating) {
+      fitted.current = current.routeKey;
+      const bounds = coords.reduce(
+        (box, coord) => box.extend(coord),
+        new maplibregl.LngLatBounds(coords[0], coords[0]),
+      );
+      map.fitBounds(bounds, {
+        padding: {
+          top: 90,
+          bottom: current.mobile ? 230 : 70,
+          left: 48,
+          right: current.paddingRight + 28,
+        },
+        pitch: 55,
+        bearing: map.getBearing(),
+        duration: 1100,
+        maxZoom: 16.4,
+      });
+    }
+  }
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+    paintRef.current(map);
+  }, [routeKey, closed, zones, pins, activePinId, flood, paddingRight, mobile, navigating]);
+
+  useEffect(() => {
+    if (!navigating) return;
+    let frame = 0;
+    let last = performance.now();
+    let lastEmit = 0;
+    const loop = (now: number) => {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      const current = propsRef.current;
+      const coords = current.routeCoords;
+      const map = mapRef.current;
+      const puck = puckRef.current;
+      if (coords && coords.length >= 2 && map && puck) {
+        const metrics = lineMetrics(coords);
+        const next = Math.min(metrics.total, current.progressRef.current + SPEED_MPS * dt);
+        current.progressRef.current = next;
+        const pose = pointAlong(coords, metrics.cum, next);
+        puck.setLngLat([pose.lon, pose.lat]);
+        puck.setRotation(pose.bearing);
+        if (now - lastEmit > 280) {
+          lastEmit = now;
+          current.onSample(next, pose);
+          map.easeTo({
+            center: [pose.lon, pose.lat],
+            bearing: pose.bearing,
+            pitch: 64,
+            zoom: Math.max(map.getZoom(), 16.3),
+            duration: 320,
+            essential: true,
+          });
+        }
+        if (next >= metrics.total - 1) current.onSample(next, pose);
+      }
+      frame = requestAnimationFrame(loop);
+    };
+    frame = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(frame);
+  }, [navigating]);
+
+  useEffect(() => {
+    if (navigating) return;
+    const puck = puckRef.current;
+    if (!puck) return;
+    puck.setLngLat([center.lon, center.lat]);
+  }, [center.lat, center.lon, navigating]);
+
+  return <div ref={ref} className="map-canvas" />;
+}

@@ -1,3 +1,96 @@
+export type Step = {
+  instruction: string;
+  name: string;
+  distance_m: number;
+  from_m: number;
+  bearing: number;
+  road_ids: string[];
+  arrive: boolean;
+};
+
+export type Destination = {
+  kind: "shelter" | "hospital" | string;
+  id: string;
+  name: string;
+  lat: number | null;
+  lon: number | null;
+  capacity: number;
+  occupancy: number;
+  open?: boolean;
+  metric?: "people" | "beds" | string;
+  osmid?: number;
+};
+
+export type RoutePlan = {
+  ok: boolean;
+  stub?: string;
+  owner?: string;
+  fallback?: string;
+  algo: string;
+  eta_s: number;
+  origin: { osmid: number; name: string; lat: number; lon: number; dist_m?: number };
+  destination: Destination;
+  geojson: {
+    type: "Feature";
+    geometry: { type: "LineString"; coordinates: [number, number][] };
+    properties?: { algo?: string; eta_s?: number };
+  };
+  steps: Step[];
+};
+
+export type FeedEvent = {
+  type: string;
+  id?: string;
+  seq: number;
+  at?: string;
+  agent: string;
+  kind?: string;
+  status?: string;
+  title: string;
+  body: string;
+  query?: string;
+  travel_s?: number | null;
+  road_id?: string | null;
+  algo?: string;
+};
+
+export type Pin = {
+  kind: string;
+  id: string;
+  name: string;
+  lat: number;
+  lon: number;
+  capacity: number;
+  occupancy: number;
+  osmid: number;
+};
+
+export type ClosedRoad = {
+  road_id: string;
+  name: string;
+  coordinates: [number, number][];
+};
+
+export type Overlay = {
+  loaded: boolean;
+  bbox: { west: number; south: number; east: number; north: number };
+  counts: { intersections: number; road_edges: number; passable: number } | null;
+  network: { source: string; attribution: string } | null;
+  router: string | null;
+  pins: Pin[];
+  closed: ClosedRoad[];
+  districts?: { name: string; cut_off: boolean }[];
+};
+
+export type ZonePayload = {
+  stub?: string;
+  owner?: string;
+  fallback?: string;
+  zones: Array<{ name: string; population?: number; polygon: [number, number][] }>;
+};
+
+export type TabId = "escape" | "report" | "live" | "me";
+
 export type RouteView = {
   decision_id: string;
   algo: string;
@@ -67,6 +160,7 @@ export type Snapshot = {
   routes?: { before: RouteView | null; after: RouteView | null };
   decisions?: Array<{
     id: string;
+    seq?: number;
     kind: string;
     at: string;
     agent: string | null;

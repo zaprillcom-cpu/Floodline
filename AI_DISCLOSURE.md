@@ -16,6 +16,7 @@ Cursor Grok 4.7 added the following, from the tasks tagged AI-assist in PLAN_V2:
 - Moved the Valencia extract to `backend/data/osm/valencia_corridor.json` so the Railway service (root directory `backend`) contains it, and added `POST /api/admin/load-valencia`, guarded by the `ADMIN_TOKEN` environment variable.
 - `GET /api/stream` (SSE) and `GET /api/feed` emit Task, Decision, and Route events already stored on those nodes, with a heartbeat every 15 seconds.
 - Turn-by-turn step text in `backend/floodline/navigation.py` (edge name and bearing). `GET /api/route` returns a GeoJSON line, steps, and an ETA.
+- The citizen web app: full-screen MapLibre (OpenFreeMap dark, fill-extrusion buildings), design tokens in `web/lib/theme.ts`, simulated GPS and a turn banner, a live Scout/Dispatcher/Analyst feed over the SSE stream, a desktop side HUD, a separate mobile layout (bottom tabs Escape / Report / Live / Me and a three-stop bottom sheet), flood vision, and a Me tab stored in `localStorage`.
 - Stubs only, each marked `TODO(Sahil)`, for the Shelter/Citizen model, `route_to_shelter`, reroute fan-out, snap, shelter WCC, the LLM planner, and report geocoding. They fall back to the existing CCH → A* → SPpaths router or the keyword planner. See `backend/floodline/stubs.py` and `backend/floodline/agents/llm_planner.py`.
 
 Sahil still writes and explains those graph operations. The fallbacks exist so the map can draw a line before that work lands.
