@@ -5,8 +5,9 @@ Usage (repo root, FalkorDB already up):
     PYTHONPATH=backend python -m floodline.osm_demo
 
 `--refresh` re-downloads the bbox with OSMnx. Without it, the committed extract
-in data/osm/valencia_corridor.json is loaded. If that file is missing and the
-download fails, the synthetic 10-node demo runs instead.
+in backend/data/osm/valencia_corridor.json is loaded (the Railway service root
+is `backend/`). If that file is missing and the download fails, the synthetic
+10-node demo runs instead.
 """
 
 from __future__ import annotations

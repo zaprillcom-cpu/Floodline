@@ -13,7 +13,7 @@ Two road networks can be loaded. The Valencia corridor extract is OpenStreetMap.
 
 | Data | Source | License / attribution |
 |---|---|---|
-| Drive network in `data/osm/valencia_corridor.json` | OpenStreetMap via OSMnx 2.1.1, `network_type='drive'`, bbox west `-0.430`, south `39.415`, east `-0.372`, north `39.458` | **ODbL 1.0**. Credit "© OpenStreetMap contributors". This repository is public. Share-alike applies to that derived database. |
+| Drive network in `backend/data/osm/valencia_corridor.json` | OpenStreetMap via OSMnx 2.1.1, `network_type='drive'`, bbox west `-0.430`, south `39.415`, east `-0.372`, north `39.458` | **ODbL 1.0**. Credit "© OpenStreetMap contributors". This repository is public. Share-alike applies to that derived database. |
 | `travel_s` | Edge length and OSMnx `add_edge_speeds` / `add_edge_travel_times` (fallback 30 km/h) | Derived from the OSM extract above. |
 | `capacity` (veh/h) | Highway-class defaults in `backend/floodline/osm_network.py`, not observed traffic | Project default, documented in code. |
 | Hospital and shelter coordinates | Public locations of Hospital Doctor Peset, Hospital La Fe, Alfafar, and Benetússer, snapped to the nearest intersection | Coordinates only. Bed counts and shelter capacity are synthetic. |
