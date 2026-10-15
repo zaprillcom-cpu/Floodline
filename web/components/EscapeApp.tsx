@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { DesktopHud } from "@/components/DesktopHud";
 import { MobileShell } from "@/components/MobileShell";
-import { fetchFeed, fetchOverlay, fetchRoute, fetchZones, fileReport, loadArea, loadValenciaDemo } from "@/lib/api";
+import { fetchFeed, fetchOverlay, fetchRoute, fetchZones, fileReport, loadArea, loadValenciaDemo, type AreaJob } from "@/lib/api";
 import {
   PAIPORTA,
   bannerFor,
@@ -23,13 +23,6 @@ type Notice = { title: string; detail: string } | null;
 
 function eventKey(event: FeedEvent): string {
   return `${event.type}:${event.id ?? event.title}:${event.seq}`;
-}
-
-function stageLabel(value: number): string {
-  if (value < 18) return "Finding your position";
-  if (value < 48) return "Downloading driveable streets";
-  if (value < 78) return "Building the CCH index";
-  return "Placing shelters";
 }
 
 export function EscapeApp() {
@@ -52,6 +45,7 @@ export function EscapeApp() {
   const [mapProgress, setMapProgress] = useState(4);
   const [place, setPlace] = useState("Nearby");
   const [mappingTitle, setMappingTitle] = useState("Mapping streets around you…");
+  const [stageText, setStageText] = useState("Finding your position");
   const progressRef = useRef(0);
   const poseRef = useRef(pose);
   const seen = useRef(new Set<string>());
@@ -60,6 +54,8 @@ export function EscapeApp() {
   const routeRef = useRef<RoutePlan | null>(null);
   const graphRef = useRef<string | null>(null);
   const modeRef = useRef<"local" | "valencia" | null>(null);
+  const loadGen = useRef(0);
+  const progressCap = useRef(18);
   const rerouteRef = useRef<(lat: number, lon: number) => void>(() => {});
   poseRef.current = pose;
   routeRef.current = route;
@@ -144,7 +140,11 @@ export function EscapeApp() {
   useEffect(() => {
     if (phase !== "mapping") return;
     const id = window.setInterval(() => {
-      setMapProgress((value) => (value >= 90 ? value : value + Math.max(0.8, (90 - value) * 0.045)));
+      setMapProgress((value) => {
+        const cap = progressCap.current;
+        if (value >= cap) return value;
+        return Math.min(cap, value + Math.max(0.4, (cap - value) * 0.08));
+      });
     }, 140);
     return () => window.clearInterval(id);
   }, [phase]);
@@ -194,18 +194,30 @@ export function EscapeApp() {
     setPose(sample);
   }, []);
 
+  function noteArea(job: AreaJob) {
+    const caps: Record<string, number> = { queued: 22, fetching: 55, indexing: 84, ready: 100, failed: 8 };
+    progressCap.current = caps[job.status] ?? 30;
+    if (job.message) setStageText(job.message);
+    if (job.status === "ready") setMapProgress(100);
+  }
+
   async function loadAround(lat: number, lon: number) {
+    const gen = ++loadGen.current;
     modeRef.current = "local";
     setPlace("Nearby");
     setMappingTitle("Mapping streets around you…");
+    setStageText("Finding your position");
+    progressCap.current = 18;
     setPhase("mapping");
+    setMapProgress(8);
     setError(null);
     setNavigating(false);
     const here = { lat, lon, bearing: poseRef.current.bearing };
     poseRef.current = here;
     setPose(here);
     try {
-      const area = await loadArea(lat, lon);
+      const area = await loadArea(lat, lon, undefined, noteArea, () => loadGen.current !== gen);
+      if (loadGen.current !== gen) return;
       adoptGraph(area.graph);
       const [map, feed] = await Promise.all([fetchOverlay(area.graph), fetchFeed(0, area.graph)]);
       setOverlay(map);
@@ -216,6 +228,7 @@ export function EscapeApp() {
       setMapProgress(100);
       setPhase("ready");
     } catch (exc) {
+      if (loadGen.current !== gen) return;
       setPhase("choose");
       setMapProgress(0);
       const message = exc instanceof Error ? exc.message : "Could not map this area";
@@ -321,9 +334,12 @@ export function EscapeApp() {
   }
 
   async function loadDemo() {
+    loadGen.current += 1;
     modeRef.current = "valencia";
     setPlace("Valencia");
     setMappingTitle("Loading the Valencia demo…");
+    setStageText("Reading the bundled Valencia extract");
+    progressCap.current = 70;
     setPhase("mapping");
     setMapProgress(12);
     setError(null);
@@ -459,7 +475,7 @@ export function EscapeApp() {
       {(phase === "mapping" || phase === "boot") && (
         <div className="map-loading" role="status" aria-live="polite" aria-busy="true">
           <h2>{mappingTitle}</h2>
-          <p>{stageLabel(mapProgress)}</p>
+          <p>{stageText}</p>
           <div className="progress-track" aria-hidden="true">
             <span style={{ width: `${Math.min(100, Math.round(mapProgress))}%` }} />
           </div>

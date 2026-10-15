@@ -1,5 +1,8 @@
 """Citizen area loads. No FalkorDB and no live Overpass."""
 
+import threading
+import time
+
 import networkx as nx
 import pytest
 from fastapi.testclient import TestClient
@@ -9,10 +12,11 @@ from floodline.area import (
     OverpassFailed,
     RateLimited,
     load_citizen_area,
+    reset_area_jobs,
     reset_rate_limit,
     tile_graph_id,
 )
-from floodline.osm_network import fetch_area_drive_graph, nearest_shelters
+from floodline.osm_network import fetch_area_drive_graph, highway_overpass_query, nearest_shelters
 from floodline.stubs import ensure_shelter_citizen_model, route_to_shelter
 
 
@@ -25,6 +29,30 @@ def _street():
         speed_kph=30, travel_time=10,
     )
     return graph
+
+
+class _InlineThread:
+    """Run the worker before ``start`` returns, so status is settled in the test."""
+
+    def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+        self._target = target
+        self._args = args
+
+    def start(self):
+        if self._target is not None:
+            self._target(*self._args)
+
+
+def _wait_job(client: TestClient, job_id: str) -> dict:
+    last = {}
+    for _ in range(40):
+        response = client.get("/api/area/status", params={"job_id": job_id})
+        assert response.status_code == 200
+        last = response.json()
+        if last["status"] in {"ready", "failed"}:
+            return last
+        time.sleep(0.02)
+    raise AssertionError(last)
 
 
 def test_tile_id_is_stable_for_a_rounded_cell():
@@ -50,7 +78,7 @@ def test_area_fetch_retries_the_mirror_and_does_not_write_the_extract(monkeypatc
     prepared, url = fetch_area_drive_graph((-0.02, 39.44, 0.02, 39.46), download=download)
     assert len(calls) == 2
     assert calls[0][0] == "https://overpass-api.de/api"
-    assert calls[0][1] == 40
+    assert calls[0][1] == 20
     assert "kumi.systems" in url
     assert prepared["bbox"] == {"west": -0.02, "south": 39.44, "east": 0.02, "north": 39.46}
     assert prepared["district_method"] == "area"
@@ -125,15 +153,87 @@ def test_overpass_failure_names_the_valencia_demo(monkeypatch):
     assert "Valencia demo" in str(exc.value)
 
 
+def test_highway_query_is_one_bounded_overpass_request():
+    query = highway_overpass_query((-0.02, 39.44, 0.02, 39.46), 20)
+    assert '["highway"]' in query
+    assert "[timeout:20]" in query
+    assert "out body;" in query
+    assert "(39.44,-0.02,39.46,0.02)" in query
+
+
+def test_a_hung_mirror_is_abandoned_at_the_deadline():
+    calls = []
+
+    def download(bbox, url, timeout_s):
+        calls.append(url)
+        if "overpass-api.de" in url:
+            time.sleep(2)
+            return _street()
+        return _street()
+
+    started = time.monotonic()
+    prepared, url = fetch_area_drive_graph(
+        (-0.02, 39.44, 0.02, 39.46),
+        timeout_s=0.2,
+        download=download,
+    )
+    assert time.monotonic() - started < 1
+    assert len(calls) == 2
+    assert "kumi" in url
+    assert prepared["edges"]
+
+
+def test_load_reports_fetching_then_indexing(monkeypatch):
+    reset_rate_limit()
+    notes = []
+    monkeypatch.setattr("floodline.area.area_is_cached", lambda settings: False)
+    monkeypatch.setattr(
+        "floodline.area.fetch_area_drive_graph",
+        lambda bbox: ({"nodes": [], "edges": [{"src": 1}], "bbox": {}}, "https://mirror.test"),
+    )
+    monkeypatch.setattr("floodline.area.fetch_shelter_candidates", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        "floodline.area.persist_area",
+        lambda settings, prepared, candidates, origin: {"ok": True, "graph": settings.graph},
+    )
+    load_citizen_area(19.076, 72.877, 1000, client="stages", on_status=lambda status, _message: notes.append(status))
+    assert notes == ["fetching", "indexing"]
+
+
+def test_shelters_use_only_the_mirror_that_served_streets(monkeypatch):
+    reset_rate_limit()
+    seen = {}
+    monkeypatch.setattr("floodline.area.area_is_cached", lambda settings: False)
+    monkeypatch.setattr(
+        "floodline.area.fetch_area_drive_graph",
+        lambda bbox: ({"nodes": [], "edges": [{"src": 1}], "bbox": {}}, "https://overpass.kumi.systems/api"),
+    )
+
+    def shelters(*_args, **kwargs):
+        seen["urls"] = kwargs.get("urls")
+        return []
+
+    monkeypatch.setattr("floodline.area.fetch_shelter_candidates", shelters)
+    monkeypatch.setattr(
+        "floodline.area.persist_area",
+        lambda settings, prepared, candidates, origin: {"ok": True, "graph": settings.graph, "origin": origin},
+    )
+    load_citizen_area(19.076, 72.877, 1000, client="mumbai")
+    assert seen["urls"] == ("https://overpass.kumi.systems/api",)
+
+
 def test_area_endpoint_caps_radius_and_skips_admin(monkeypatch):
     monkeypatch.delenv("ADMIN_TOKEN", raising=False)
+    monkeypatch.setattr("floodline.area.threading.Thread", _InlineThread)
     seen = {}
 
-    def fake(lat, lon, radius_m=3000, *, client="unknown", settings=None):
+    def fake(lat, lon, radius_m=2000, *, client="unknown", settings=None, on_status=None):
         seen.update(lat=lat, lon=lon, radius_m=radius_m, client=client)
+        if on_status:
+            on_status("fetching", "Downloading streets from OpenStreetMap.")
         return {"ok": True, "graph": "fl-p0000-p00000", "bbox": {}}
 
-    monkeypatch.setattr("floodline.api.load_citizen_area", fake)
+    monkeypatch.setattr("floodline.area.load_citizen_area", fake)
     client = TestClient(app)
     too_wide = client.post("/api/area/load", json={"lat": 1, "lon": 2, "radius_m": 5001})
     assert too_wide.status_code == 422
@@ -143,15 +243,40 @@ def test_area_endpoint_caps_radius_and_skips_admin(monkeypatch):
         headers={"X-Forwarded-For": "203.0.113.8"},
     )
     assert ok.status_code == 200
-    assert seen["radius_m"] == 3000
+    assert ok.json()["status"] == "queued"
+    assert seen["radius_m"] == 2000
     assert seen["client"] == "203.0.113.8"
+    settled = _wait_job(client, ok.json()["job_id"])
+    assert settled["status"] == "ready"
     capped = client.post("/api/area/load", json={"lat": 1, "lon": 2, "radius_m": 5000})
     assert capped.status_code == 200
     assert seen["radius_m"] == 5000
+    assert client.get("/api/area/status", params={"job_id": "missing-job"}).status_code == 404
+
+
+def test_post_returns_before_a_blocked_download(monkeypatch):
+    release = threading.Event()
+
+    def block(*_args, **_kwargs):
+        release.wait(3)
+        return {"ok": True, "graph": "fl-p1908-p7288", "cached": False}
+
+    monkeypatch.setattr("floodline.area.load_citizen_area", block)
+    client = TestClient(app)
+    started = time.perf_counter()
+    response = client.post("/api/area/load", json={"lat": 19.076, "lon": 72.877, "radius_m": 1000})
+    elapsed = time.perf_counter() - started
+    release.set()
+    assert response.status_code == 200
+    assert response.json()["status"] == "queued"
+    assert response.json()["job_id"]
+    assert elapsed < 0.5
 
 
 def test_api_rate_limit_and_overpass_status(monkeypatch):
     reset_rate_limit()
+    reset_area_jobs()
+    monkeypatch.setattr("floodline.area.threading.Thread", _InlineThread)
     monkeypatch.setattr("floodline.area.area_is_cached", lambda settings: False)
     monkeypatch.setattr("floodline.area.fetch_shelter_candidates", lambda *_a, **_k: [])
     monkeypatch.setattr(
@@ -168,16 +293,22 @@ def test_api_rate_limit_and_overpass_status(monkeypatch):
     monkeypatch.setattr("floodline.area.fetch_area_drive_graph", fetch)
     client = TestClient(app)
     for _ in range(4):
-        assert client.post("/api/area/load", json={"lat": 39.45, "lon": -0.4}).status_code == 200
+        queued = client.post("/api/area/load", json={"lat": 39.45, "lon": -0.4})
+        assert queued.status_code == 200
+        assert queued.json()["status"] == "queued"
+        assert _wait_job(client, queued.json()["job_id"])["status"] == "ready"
     blocked = client.post("/api/area/load", json={"lat": 39.45, "lon": -0.4})
-    assert blocked.status_code == 429
-    assert "Valencia demo" in blocked.json()["detail"]
+    assert blocked.status_code == 200
+    failed_limit = _wait_job(client, blocked.json()["job_id"])
+    assert failed_limit["status"] == "failed"
+    assert "Valencia demo" in failed_limit["message"]
 
     reset_rate_limit()
     state["fail"] = True
-    failed = client.post("/api/area/load", json={"lat": 12, "lon": 12})
-    assert failed.status_code == 502
-    assert "Valencia demo" in failed.json()["detail"]
+    queued = client.post("/api/area/load", json={"lat": 12, "lon": 12})
+    failed = _wait_job(client, queued.json()["job_id"])
+    assert failed["status"] == "failed"
+    assert "Valencia demo" in failed["message"]
 
 
 def test_valencia_demo_uses_the_bundled_extract(monkeypatch):

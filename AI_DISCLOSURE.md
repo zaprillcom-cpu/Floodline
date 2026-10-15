@@ -21,7 +21,7 @@ Cursor Grok 4.7 implemented every task tagged **AI-assist**. Sahil's tasks are s
 - Full-screen MapLibre map, OpenFreeMap dark style, `fill-extrusion` buildings (`web/components/FloodMap.tsx`).
 - Design tokens in `web/lib/theme.ts`.
 - Simulated GPS, turn banner, live agent cards, desktop HUD, mobile tabs and bottom sheet, flood-vision tint, Me tab in `localStorage`.
-- `POST /api/area/load` downloads an Overpass drive network around the browser location (40 s timeout, one retry on a second mirror), stores it in a FalkorDB graph named for a 0.05° tile, builds the CCH index, and passes up to 8 OSM shelter candidates into the existing shelter stubs. Radius is capped at 5000 m. Uncached loads are rate-limited. No `ADMIN_TOKEN`.
+- `POST /api/area/load` returns a job immediately. A background worker downloads an Overpass drive network (20 s per mirror, one retry, no OSMnx status pause), stores it in a FalkorDB graph named for a 0.05° tile, builds the CCH index, and passes up to 8 OSM shelter candidates into the existing shelter stubs. Default radius is 2000 m, capped at 5000 m. The map polls `GET /api/area/status` and gives up if `queued` or `fetching` does not change for 45 s. No `ADMIN_TOKEN`.
 - `POST /api/area/valencia` loads the bundled extract into the `valencia` graph so the demo does not wait on Overpass. Route, overlay, zones, feed, report, and SSE take that graph id.
 - The map's **Use my location** action is the default when geolocation permission is already granted. The loading state reads "Mapping streets around you…". If Overpass fails, the screen offers the Valencia demo.
 

@@ -62,11 +62,62 @@ export function fileReport(text: string, graph?: string | null): Promise<Snapsho
   });
 }
 
-export function loadArea(lat: number, lon: number, radiusM = 3000): Promise<AreaLoad> {
-  return send<AreaLoad>("/api/area/load", {
+export type AreaJob = AreaLoad & {
+  job_id: string;
+  status: "queued" | "fetching" | "indexing" | "ready" | "failed" | string;
+  message: string;
+};
+
+const AREA_POLL_MS = 1500;
+const AREA_STALL_MS = 45_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function fetchAreaStatus(jobId: string): Promise<AreaJob> {
+  return send<AreaJob>(`/api/area/status?job_id=${encodeURIComponent(jobId)}`);
+}
+
+export async function loadArea(
+  lat: number,
+  lon: number,
+  radiusM?: number,
+  onUpdate?: (job: AreaJob) => void,
+  shouldStop?: () => boolean,
+): Promise<AreaLoad> {
+  const body: { lat: number; lon: number; radius_m?: number } = { lat, lon };
+  if (radiusM != null) body.radius_m = radiusM;
+  const queued = await send<AreaJob>("/api/area/load", {
     method: "POST",
-    body: JSON.stringify({ lat, lon, radius_m: radiusM }),
+    body: JSON.stringify(body),
   });
+  onUpdate?.(queued);
+  let marker = `${queued.status}|${queued.message}`;
+  let changedAt = Date.now();
+  let current = queued;
+  while (!shouldStop?.()) {
+    if (current.status === "ready" && current.graph) return current;
+    if (current.status === "failed") {
+      throw new Error(
+        current.message ||
+          "Overpass could not download streets for this area. Open the Valencia demo, which uses the bundled extract.",
+      );
+    }
+    if (Date.now() - changedAt >= AREA_STALL_MS) {
+      throw new Error("Street mapping stalled. Open the Valencia demo, which uses the bundled extract.");
+    }
+    await sleep(AREA_POLL_MS);
+    if (shouldStop?.()) break;
+    current = await fetchAreaStatus(queued.job_id);
+    const next = `${current.status}|${current.message}`;
+    if (next !== marker) {
+      marker = next;
+      changedAt = Date.now();
+    }
+    onUpdate?.(current);
+  }
+  throw new Error("cancelled");
 }
 
 export function loadValenciaDemo(): Promise<AreaLoad> {
