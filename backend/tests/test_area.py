@@ -1,6 +1,5 @@
 """Citizen area loads. No FalkorDB and no live Overpass."""
 
-import json
 import threading
 import time
 
@@ -10,7 +9,6 @@ from fastapi.testclient import TestClient
 
 from floodline.api import app
 from floodline.area import (
-    CITIES,
     OverpassFailed,
     RateLimited,
     load_citizen_area,
@@ -18,6 +16,8 @@ from floodline.area import (
     reset_rate_limit,
     tile_graph_id,
 )
+from floodline.network import haversine_m
+from floodline.regions import REGIONS, crop_tile, region_containing
 from floodline.osm_network import (
     USER_AGENT,
     _post_overpass,
@@ -123,8 +123,13 @@ def test_cached_tile_skips_overpass_and_the_rate_limit(monkeypatch):
     assert payload["graph"] == "fl-p3945-n00040"
 
 
+def _force_overpass(monkeypatch):
+    monkeypatch.setattr("floodline.area.region_containing", lambda lat, lon: None)
+
+
 def test_uncached_loads_are_rate_limited(monkeypatch):
     reset_rate_limit()
+    _force_overpass(monkeypatch)
     monkeypatch.setattr("floodline.area.area_is_cached", lambda settings: False)
     monkeypatch.setattr(
         "floodline.area.fetch_area_drive_graph",
@@ -193,6 +198,7 @@ def test_a_hung_mirror_is_abandoned_at_the_deadline():
 
 def test_load_reports_fetching_then_indexing(monkeypatch):
     reset_rate_limit()
+    _force_overpass(monkeypatch)
     notes = []
     monkeypatch.setattr("floodline.area.area_is_cached", lambda settings: False)
     monkeypatch.setattr(
@@ -210,6 +216,7 @@ def test_load_reports_fetching_then_indexing(monkeypatch):
 
 def test_shelters_use_only_the_mirror_that_served_streets(monkeypatch):
     reset_rate_limit()
+    _force_overpass(monkeypatch)
     seen = {}
     monkeypatch.setattr("floodline.area.area_is_cached", lambda settings: False)
     monkeypatch.setattr(
@@ -284,6 +291,7 @@ def test_post_returns_before_a_blocked_download(monkeypatch):
 def test_api_rate_limit_and_overpass_status(monkeypatch):
     reset_rate_limit()
     reset_area_jobs()
+    _force_overpass(monkeypatch)
     monkeypatch.setattr("floodline.area.threading.Thread", _InlineThread)
     monkeypatch.setattr("floodline.area.area_is_cached", lambda settings: False)
     monkeypatch.setattr("floodline.area.fetch_shelter_candidates", lambda *_a, **_k: [])
@@ -362,8 +370,9 @@ def test_valencia_demo_does_not_reload_a_warm_graph(monkeypatch):
 def test_routing_endpoints_take_a_graph_id(monkeypatch):
     seen = {}
 
-    def fake_route(lat, lon, settings=None):
+    def fake_route(lat, lon, settings=None, dest_id=None):
         seen["route"] = settings.graph
+        seen["dest"] = dest_id
         return {"ok": True}
 
     def fake_overlay(settings=None):
@@ -388,6 +397,8 @@ def test_routing_endpoints_take_a_graph_id(monkeypatch):
     assert seen["route"] == "mumbai"
     assert client.get("/api/route?lat=40.7074&lon=-74.0113&graph=nyc").status_code == 200
     assert seen["route"] == "nyc"
+    assert client.get("/api/route?lat=19.1663&lon=72.8526&graph=fl-p1915-p07285&dest=school-1").status_code == 200
+    assert seen["dest"] == "school-1"
     assert client.get("/api/route?lat=1&lon=2&graph=not-a-graph").status_code == 400
     assert client.get("/api/escape/overlay?graph=valencia").status_code == 200
     assert seen["overlay"] == "valencia"
@@ -480,68 +491,111 @@ def test_overpass_tries_every_mirror_and_sends_a_user_agent(monkeypatch):
     assert seen["url"] == "https://overpass.private.coffee/api/interpreter"
 
 
-def test_bundled_city_extracts_follow_the_valencia_shape():
-    for slug in ("mumbai", "nyc"):
-        spec = CITIES[slug]
-        path = spec["path"]
-        assert path.is_file()
-        assert path.stat().st_size < 8_000_000
-        data = json.loads(path.read_text(encoding="utf-8"))
-        assert data["source"] == "osm"
-        assert data["license"] == "ODbL-1.0"
-        assert "OpenStreetMap" in data["attribution"]
-        assert data["network_type"] == "drive"
-        assert data["tool"] == "osmium+osmnx"
-        assert "geofabrik" in data["geofabrik"]
-        center = data["center"]
-        bbox = data["bbox"]
-        assert bbox["west"] < center["lon"] < bbox["east"]
-        assert bbox["south"] < center["lat"] < bbox["north"]
-        assert center["lat"] == pytest.approx(spec["lat"])
-        assert center["lon"] == pytest.approx(spec["lon"])
-        assert data["shelters"] and data["hospitals"] and data["nodes"] and data["edges"]
-        edge = data["edges"][0]
-        for field in ("road_id", "travel_s", "capacity", "src", "dst", "osm_way"):
-            assert field in edge
-        assert {node["district"] for node in data["nodes"]} == {spec["place"] if slug == "nyc" else "Mumbai"}
+def _nearest_node(nodes, lat, lon):
+    return min(nodes, key=lambda node: haversine_m(lat, lon, node["lat"], node["lon"]))
 
 
-def test_city_endpoint_loads_the_bundled_extract(monkeypatch):
+def test_offline_regions_cover_goregaon_manhattan_and_valencia():
+    caps = {"mumbai": 50_000_000, "manhattan": 20_000_000, "valencia": 20_000_000}
+    by_id = {region.id: region for region in REGIONS}
+    assert set(by_id) == set(caps)
+    goregaon = region_containing(19.1663, 72.8526)
+    assert goregaon is not None and goregaon.id == "mumbai"
+    midtown = region_containing(40.758, -73.9855)
+    assert midtown is not None and midtown.id == "manhattan"
+    paiporta = region_containing(39.4294, -0.4183)
+    assert paiporta is not None and paiporta.id == "valencia"
+    assert region_containing(0, 0) is None
+    for region in REGIONS:
+        assert region.path.is_file()
+        assert region.path.stat().st_size < caps[region.id]
+        assert region.contains(region.center_lat, region.center_lon)
+
+
+def test_goregaon_offline_tile_starts_on_a_nearby_street():
+    region = region_containing(19.1663, 72.8526)
+    assert region is not None
+    prepared, shelters, hospitals = crop_tile(region, 19.1663, 72.8526, 2500)
+    nearest = _nearest_node(prepared["nodes"], 19.1663, 72.8526)
+    dist = haversine_m(19.1663, 72.8526, nearest["lat"], nearest["lon"])
+    assert dist < 50
+    assert shelters and hospitals
+    assert len(shelters) <= 8
+    assert len(hospitals) <= 4
+    roads = nx.DiGraph()
+    for edge in prepared["edges"]:
+        roads.add_edge(edge["src"], edge["dst"])
+    shelter_node = _nearest_node(prepared["nodes"], shelters[0]["lat"], shelters[0]["lon"])
+    assert nx.has_path(roads, nearest["osmid"], shelter_node["osmid"])
+    assert tile_graph_id(19.1663, 72.8526) == "fl-p1915-p07285"
+
+
+def test_offline_goregaon_loads_skip_overpass_and_the_rate_limit(monkeypatch):
+    reset_rate_limit()
     monkeypatch.setattr("floodline.area.area_is_cached", lambda settings: False)
-    seen = {}
 
-    def install(settings, prepared, spec):
-        seen["graph"] = settings.graph
-        seen["shelters"] = prepared.get("shelters") or []
-        seen["hospitals"] = prepared.get("hospitals") or []
-        seen["callsign"] = spec["callsign"]
+    def persist(settings, prepared, candidates, *, origin, hospitals=None, unit=None):
         return {
             "ok": True,
             "graph": settings.graph,
             "cached": False,
-            "origin": "extract",
-            "place": spec["place"],
-            "center": {"lat": spec["lat"], "lon": spec["lon"]},
-            "intersections": len(prepared["nodes"]),
-            "shelters": len(seen["shelters"]),
+            "origin": origin,
+            "shelters": len(candidates),
+            "hospitals": len(hospitals or []),
+            "callsign": (unit or {}).get("callsign"),
+        }
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("a point inside a bundled region must not call Overpass")
+
+    monkeypatch.setattr("floodline.area.persist_area", persist)
+    monkeypatch.setattr("floodline.area.fetch_area_drive_graph", boom)
+    for _ in range(6):
+        payload = load_citizen_area(19.1663, 72.8526, client="goregaon")
+    assert payload["origin"] == "offline"
+    assert payload["graph"] == "fl-p1915-p07285"
+    assert payload["shelters"] >= 1
+    assert payload["hospitals"] >= 1
+    assert payload["callsign"] == "M-1"
+
+
+def test_city_endpoint_loads_the_goregaon_tile(monkeypatch):
+    monkeypatch.setattr("floodline.area.area_is_cached", lambda settings: False)
+    seen = {}
+
+    def persist(settings, prepared, candidates, *, origin, hospitals=None, unit=None):
+        seen["nodes"] = prepared["nodes"]
+        seen["shelters"] = candidates
+        seen["hospitals"] = hospitals or []
+        seen["unit"] = unit
+        seen["origin"] = origin
+        return {
+            "ok": True,
+            "graph": settings.graph,
+            "cached": False,
+            "origin": origin,
+            "place": prepared.get("place"),
+            "center": prepared.get("center"),
         }
 
     def boom(*_args, **_kwargs):
         raise AssertionError("bundled city must not call Overpass")
 
-    monkeypatch.setattr("floodline.area.install_city_graph", install)
+    monkeypatch.setattr("floodline.area.persist_area", persist)
     monkeypatch.setattr("floodline.area.fetch_area_drive_graph", boom)
     client = TestClient(app)
     response = client.post("/api/area/city/mumbai")
     assert response.status_code == 200
     body = response.json()
-    assert body["graph"] == "mumbai"
-    assert body["origin"] == "extract"
+    assert body["graph"] == "fl-p1915-p07285"
+    assert body["origin"] == "offline"
     assert body["cached"] is False
-    assert body["center"]["lat"] == pytest.approx(19.076)
-    assert body["center"]["lon"] == pytest.approx(72.877)
+    assert body["center"]["lat"] == pytest.approx(19.1663)
+    assert body["center"]["lon"] == pytest.approx(72.8526)
+    nearest = _nearest_node(seen["nodes"], 19.1663, 72.8526)
+    assert haversine_m(19.1663, 72.8526, nearest["lat"], nearest["lon"]) < 50
     assert seen["shelters"] and seen["hospitals"]
-    assert seen["callsign"] == "M-1"
+    assert seen["unit"]["callsign"] == "M-1"
     assert client.post("/api/area/city/lisbon").status_code == 404
 
 
@@ -549,19 +603,20 @@ def test_warm_city_graph_is_not_reloaded(monkeypatch):
     monkeypatch.setattr("floodline.area.area_is_cached", lambda settings: True)
     monkeypatch.setattr(
         "floodline.area.read_cached_area",
-        lambda settings: {"ok": True, "graph": settings.graph, "cached": True, "origin": "extract"},
+        lambda settings: {"ok": True, "graph": settings.graph, "cached": True, "origin": "offline"},
     )
 
     def boom(*_args, **_kwargs):
         raise AssertionError("warm city graph must not be reloaded")
 
-    monkeypatch.setattr("floodline.area.install_city_graph", boom)
-    monkeypatch.setattr("floodline.area.read_extract", boom)
+    monkeypatch.setattr("floodline.area.crop_tile", boom)
+    monkeypatch.setattr("floodline.area.fetch_area_drive_graph", boom)
     body = TestClient(app).post("/api/area/city/nyc").json()
     assert body["cached"] is True
-    assert body["graph"] == "nyc"
+    assert body["graph"] == tile_graph_id(40.758, -73.9855)
     assert body["place"] == "New York"
-    assert body["center"]["lon"] == pytest.approx(-74.0113)
+    assert body["center"]["lat"] == pytest.approx(40.758)
+    assert body["center"]["lon"] == pytest.approx(-73.9855)
 
 
 def test_valencia_city_slug_uses_the_existing_demo(monkeypatch):

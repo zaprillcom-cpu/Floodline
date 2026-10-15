@@ -44,6 +44,7 @@ type Props = {
   onFlood: () => void;
   onRetry: () => void;
   onCity: (slug: CitySlug) => void;
+  onDestination: (id: string) => void;
   chooser?: number;
   onGo: (place: SavedPlace) => void;
   place: string;
@@ -78,6 +79,7 @@ export function MobileShell(props: Props) {
             onFlood={props.onFlood}
             onRetry={props.onRetry}
             onCity={props.onCity}
+            onDestination={props.onDestination}
             place={props.place}
             mapping={props.mapping}
           />

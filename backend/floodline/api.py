@@ -228,10 +228,11 @@ def citizen_route(
     lat: float = Query(..., ge=-90, le=90),
     lon: float = Query(..., ge=-180, le=180),
     graph: str | None = Query(default=None),
+    dest: str | None = Query(default=None, max_length=80),
 ) -> dict:
     """GeoJSON line, turn steps, and ETA. Shelter choice is the Sahil stub."""
     cfg = _settings_for(graph)
-    return _guard(lambda: route_payload(lat, lon, cfg))
+    return _guard(lambda: route_payload(lat, lon, cfg, dest_id=dest))
 
 
 @app.get("/api/escape/overlay")

@@ -2,6 +2,16 @@ import { BUNDLED_CITIES, type CitySlug } from "@/lib/cities";
 import { formatDistance } from "@/lib/geo";
 import { formatEta, type Overlay, type RoutePlan } from "@/lib/types";
 
+function placeHead(role: string | undefined, kind: string | undefined): string {
+  if (role === "hospital" || kind === "hospital") return "Hospital";
+  return "Shelter";
+}
+
+function aboutMinutes(seconds: number): string {
+  const minutes = Math.max(1, Math.round(seconds / 60));
+  return `about ${minutes} min`;
+}
+
 type Notice = { title: string; detail: string } | null;
 
 type Props = {
@@ -20,6 +30,7 @@ type Props = {
   onFlood: () => void;
   onRetry: () => void;
   onCity: (slug: CitySlug) => void;
+  onDestination: (id: string) => void;
   place?: string;
   mapping?: boolean;
 };
@@ -40,12 +51,15 @@ export function EscapePanel({
   onFlood,
   onRetry,
   onCity,
+  onDestination,
   place = "Nearby",
   mapping = false,
 }: Props) {
   const dest = route?.destination;
   const remainRatio = total > 0 ? Math.max(0, 1 - progress / total) : 1;
   const eta = route ? Math.round(route.eta_s * remainRatio) : null;
+  const tripM = route?.distance_m ?? total;
+  const choices = (route?.alternatives ?? []).slice(0, 5);
   const capacity = dest && dest.capacity > 0 ? Math.min(1, dest.occupancy / dest.capacity) : null;
   const loaded = overlay?.loaded;
 
@@ -60,6 +74,36 @@ export function EscapePanel({
             ? `Nearest open shelter on the ${place} street graph.`
             : "The street graph is not loaded yet."}
       </p>
+      {dest && (
+        <div className="dest-card" aria-label="Destination">
+          <p className="kicker">Destination</p>
+          <strong>
+            {placeHead(dest.kind, dest.subtype)}: {dest.name}
+          </strong>
+          <p>
+            {formatDistance(tripM)}, {aboutMinutes(route?.eta_s ?? 0)}
+          </p>
+        </div>
+      )}
+      {choices.length > 0 && (
+        <div className="dest-list" aria-label="Change destination">
+          <p className="kicker">Change destination</p>
+          {choices.map((choice) => (
+            <button
+              key={choice.id}
+              type="button"
+              className={choice.id === dest?.id ? "dest-option current" : "dest-option"}
+              onClick={() => onDestination(choice.id)}
+              disabled={busy || choice.id === dest?.id}
+            >
+              <span>
+                {placeHead(choice.role, choice.kind)}: {choice.name}
+              </span>
+              <strong>{formatDistance(choice.distance_m)}</strong>
+            </button>
+          ))}
+        </div>
+      )}
       {dest && (
         <div className="stat-row">
           <div>

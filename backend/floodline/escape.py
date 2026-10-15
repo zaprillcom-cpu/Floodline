@@ -8,9 +8,11 @@ from __future__ import annotations
 
 from floodline.config import Settings
 from floodline.db import get_graph, rows
-from floodline.navigation import line_coordinates
+from floodline.navigation import build_steps, line_coordinates, path_hops
+from floodline.network import haversine_m
 from floodline.osm_network import bbox_dict, parse_bbox
-from floodline.stubs import reroute_affected, route_to_shelter, shelter_reachability
+from floodline.routing import route
+from floodline.stubs import reroute_affected, route_to_shelter, shelter_reachability, snap_point
 
 
 def _loaded(graph) -> bool:
@@ -18,11 +20,122 @@ def _loaded(graph) -> bool:
     return bool(found and int(found[0][0]) > 0)
 
 
-def route_payload(lat: float, lon: float, settings: Settings | None = None) -> dict:
+def _place_rows(graph) -> list[dict]:
+    found = []
+    for sid, name, kind, capacity, occupancy, slat, slon, osmid in rows(
+        graph.query(
+            """
+            MATCH (s:Shelter)-[:ACCESS]->(i:Intersection)
+            RETURN s.id, s.name, s.kind, s.capacity, s.occupancy, s.lat, s.lon, i.osmid
+            """
+        )
+    ):
+        found.append(
+            {
+                "id": sid,
+                "name": name,
+                "role": "shelter",
+                "kind": kind or "shelter",
+                "osmid": int(osmid),
+                "lat": float(slat or 0),
+                "lon": float(slon or 0),
+                "capacity": int(capacity or 0),
+                "occupancy": int(occupancy or 0),
+            }
+        )
+    for hid, name, beds_free, beds_total, hlat, hlon, osmid in rows(
+        graph.query(
+            """
+            MATCH (h:Hospital)-[:ACCESS]->(i:Intersection)
+            RETURN h.id, h.name, h.beds_free, h.beds_total, h.lat, h.lon, i.osmid
+            """
+        )
+    ):
+        total = int(beds_total or 0)
+        free = int(beds_free or 0)
+        found.append(
+            {
+                "id": hid,
+                "name": name,
+                "role": "hospital",
+                "kind": "hospital",
+                "osmid": int(osmid),
+                "lat": float(hlat or 0),
+                "lon": float(hlon or 0),
+                "capacity": total,
+                "occupancy": max(0, total - free),
+            }
+        )
+    return found
+
+
+def _as_choice(place: dict, lat: float, lon: float) -> dict:
+    return {
+        "id": place["id"],
+        "name": place["name"],
+        "role": place["role"],
+        "kind": place["kind"] or place["role"],
+        "lat": place["lat"],
+        "lon": place["lon"],
+        "osmid": place["osmid"],
+        "distance_m": int(haversine_m(lat, lon, place["lat"], place["lon"])),
+        "capacity": place["capacity"],
+        "occupancy": place["occupancy"],
+    }
+
+
+def _route_to_place(graph, lat: float, lon: float, place: dict) -> dict:
+    snapped = snap_point(graph, lat, lon)
+    found = route(graph, int(snapped["osmid"]), int(place["osmid"]))
+    hops = path_hops(graph, found.osmids)
+    return {
+        "stub": "route_to_shelter",
+        "owner": "Sahil",
+        "fallback": "chosen",
+        "origin": snapped,
+        "destination": {
+            "kind": place["role"],
+            "subtype": place["kind"],
+            "id": place["id"],
+            "name": place["name"],
+            "osmid": place["osmid"],
+            "lat": place["lat"],
+            "lon": place["lon"],
+            "capacity": place["capacity"],
+            "occupancy": place["occupancy"],
+            "open": True,
+            "metric": "beds" if place["role"] == "hospital" else "people",
+        },
+        "algo": found.algo,
+        "eta_s": found.travel_s,
+        "hops": hops,
+        "steps": build_steps(hops),
+    }
+
+
+def route_payload(
+    lat: float,
+    lon: float,
+    settings: Settings | None = None,
+    dest_id: str | None = None,
+) -> dict:
     graph = get_graph(settings)
     if not _loaded(graph):
         raise LookupError("Graph is not loaded")
-    raw = route_to_shelter(graph, lat, lon)
+    places = _place_rows(graph)
+    chosen_place = next((place for place in places if str(place["id"]) == str(dest_id)), None) if dest_id else None
+    if dest_id and chosen_place is None:
+        raise LookupError("That destination is not on this map")
+    if chosen_place is not None:
+        raw = _route_to_place(graph, lat, lon, chosen_place)
+    else:
+        raw = route_to_shelter(graph, lat, lon)
+        subtype = ""
+        for place in places:
+            if str(place["id"]) == str(raw["destination"].get("id")):
+                subtype = place["kind"] or ""
+                break
+        raw["destination"] = {**raw["destination"], "subtype": subtype or raw["destination"].get("kind")}
     coordinates = line_coordinates(raw["hops"])
     if len(coordinates) < 2:
         origin = raw["origin"]
@@ -32,7 +145,26 @@ def route_payload(lat: float, lon: float, settings: Settings | None = None) -> d
                 [round(float(origin["lon"]), 7), round(float(origin["lat"]), 7)],
                 [round(float(dest["lon"]), 7), round(float(dest["lat"]), 7)],
             ]
+    here = [round(float(lon), 7), round(float(lat), 7)]
+    if coordinates and (abs(coordinates[0][0] - here[0]) > 1e-5 or abs(coordinates[0][1] - here[1]) > 1e-5):
+        coordinates = [here, *coordinates]
     steps = list(raw["steps"])
+    lead = int(raw["origin"].get("dist_m") or 0)
+    if lead > 25 and steps:
+        for step in steps:
+            step["from_m"] = int(step["from_m"]) + lead
+        steps.insert(
+            0,
+            {
+                "instruction": "Start from your position",
+                "name": "Your position",
+                "distance_m": lead,
+                "from_m": 0,
+                "bearing": steps[0]["bearing"] if steps else 0,
+                "road_ids": [],
+                "arrive": False,
+            },
+        )
     travelled = steps[-1]["from_m"] + steps[-1]["distance_m"] if steps else 0
     dest_name = raw["destination"]["name"]
     steps.append(
@@ -46,6 +178,8 @@ def route_payload(lat: float, lon: float, settings: Settings | None = None) -> d
             "arrive": True,
         }
     )
+    distance_m = sum(int(step["distance_m"]) for step in steps)
+    alternatives = sorted((_as_choice(place, lat, lon) for place in places), key=lambda item: item["distance_m"])[:5]
     return {
         "ok": True,
         "stub": raw["stub"],
@@ -55,6 +189,8 @@ def route_payload(lat: float, lon: float, settings: Settings | None = None) -> d
         "destination": raw["destination"],
         "algo": raw["algo"],
         "eta_s": raw["eta_s"],
+        "distance_m": distance_m,
+        "alternatives": alternatives,
         "geojson": {
             "type": "Feature",
             "geometry": {"type": "LineString", "coordinates": coordinates},

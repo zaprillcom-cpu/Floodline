@@ -53,20 +53,30 @@ curl -X POST https://floodline-production.up.railway.app/api/admin/load-valencia
 
 The map asks for the browser's location on first load. If permission is already granted, it loads that tile. Otherwise it waits for **Use my location** or a bundled city (Valencia, Mumbai, New York). The same picker is in the desktop HUD and the mobile Escape tab. If a live download fails, the picker is shown immediately.
 
-`POST /api/area/load` takes `{ "lat", "lon", "radius_m" }` and returns immediately with `{ "job_id", "status": "queued" }`. `radius_m` defaults to 2000 and is rejected above 5000. It does **not** use `ADMIN_TOKEN`. Poll `GET /api/area/status?job_id=…` for `queued`, `fetching`, `indexing`, `ready`, or `failed`. The worker downloads streets with one Overpass query (`way["highway"]` plus its nodes). Every request sends `User-Agent: Floodline/1.0 (https://github.com/zaprillcom-cpu/Floodline)`. Mirrors are tried in order — `overpass-api.de`, `overpass.kumi.systems`, `overpass.private.coffee`, then `maps.mail.ru` — sharing a 40 second budget (10 seconds each) with a short backoff between failures. It does not use OSMnx's status-endpoint pause. Bundled extracts are never overwritten.
+`POST /api/area/load` takes `{ "lat", "lon", "radius_m" }` and returns immediately with `{ "job_id", "status": "queued" }`. `radius_m` defaults to 2000 and is rejected above 5000. It does **not** use `ADMIN_TOKEN`. Poll `GET /api/area/status?job_id=…` for `queued`, `fetching`, `indexing`, `ready`, or `failed`.
 
-The graph name is a 0.05° tile, for example `fl-p3945-n00040` for 39.45, −0.40. A second load of that tile is read from FalkorDB and does not call Overpass. Uncached loads are limited to 4 per minute per client (`X-Forwarded-For`, otherwise the peer address). The loader builds the CCH index, then passes up to 8 OSM shelter candidates (`amenity=school|community_centre|social_facility`, `leisure=sports_centre`) into `ensure_shelter_citizen_model`. That stub is still Sahil's. The fallback attaches them with `ACCESS`, not `NEAR`.
+A point inside a bundled region never calls Overpass. The worker crops a 2–3 km tile from a SQLite street table in `backend/data/regions/`, loads that tile into its own FalkorDB graph, builds the CCH index, and attaches shelters and hospitals from the same file. Shelters are `amenity=school|community_centre|social_facility` and `leisure=sports_centre`, capped at 8, and still go through `ensure_shelter_citizen_model`. Hospitals (`amenity=hospital`) are capped at the 4 nearest. Offline loads are not rate-limited. Overpass is only the fallback outside those regions: one drive query, `User-Agent: Floodline/1.0 (https://github.com/zaprillcom-cpu/Floodline)`, mirrors `overpass-api.de`, `overpass.kumi.systems`, `overpass.private.coffee`, then `maps.mail.ru`, sharing a 40 second budget (10 seconds each). It does not use OSMnx's status-endpoint pause.
 
-`GET /api/route`, `/api/escape/overlay`, `/api/escape/zones`, `/api/feed`, and `/api/stream` take `?graph=`. Reports may send the same id in the JSON body. Unknown ids are 400.
+| Region | File | Coverage | Default centre |
+|---|---|---|---|
+| Greater Mumbai | `backend/data/regions/mumbai.sqlite` (~38 MB) | 18.89–19.30 N, 72.77–73.00 E | Goregaon, 19.1663, 72.8526 |
+| Manhattan | `backend/data/regions/manhattan.sqlite` (~8 MB) | 40.698–40.882 N, 74.03–73.91 W | Midtown, 40.758, −73.9855 |
+| Wider Valencia | `backend/data/regions/valencia.sqlite` (~12 MB) | 39.38–39.55 N, 0.50–0.28 W | Paiporta, 39.4294, −0.4183 |
 
-`POST /api/area/city/{slug}` loads a bundled extract for `valencia`, `mumbai`, or `nyc`. `POST /api/area/valencia` is the same Valencia load. Neither calls Overpass or requires an admin token. A graph that already has intersections is left as-is. Mumbai is about 3 km around 19.076, 72.877. New York is about 3 km around lower Manhattan (40.7074, −74.0113). Both files were cropped with osmium from Geofabrik PBF extracts (`asia/india/western-zone` and `north-america/us/new-york`) after public Overpass returned 500/502/504, then passed through the same `prepare_drive_graph` pipeline as `valencia_corridor.json`. Each file includes OSM shelter candidates and hospitals. Route, report, and SSE take `graph=mumbai` and `graph=nyc` the same way they take `valencia`.
+The three files are committed in git (not Git LFS). Together they are about 59 MB, under GitHub's 100 MB file limit and inside a Railway image. A Goregaon crop (19.1663, 72.8526, 2500 m) is about 6,300 nodes and 14,000 edges, finishes in a few dozen milliseconds, and stays near 21 MB of process RSS. The nearest intersection is on Aarey Road, about 9 m from that point, so the route starts there. FalkorDB is a separate service; a tile of this size is the same order as the Valencia corridor that already loads. Railway Hobby allows up to 48 GB RAM and a large image; even a tighter free/trial image cap (about 4 GB) and ephemeral disk (about 1 GB) fit this data.
 
-If Overpass fails, the job status is `failed` and the map shows the city picker straight away. The map also stops if `queued` or `fetching` does not change for 45 seconds, so the spinner cannot sit there forever.
+The graph name is a 0.05° tile, for example `fl-p1915-p07285` for Goregaon and `fl-p3945-n00040` for 39.45, −0.40. A second load of that tile is read from FalkorDB. Uncached Overpass loads are limited to 4 per minute per client (`X-Forwarded-For`, otherwise the peer address).
+
+`GET /api/route` returns the line, ETA, `distance_m`, turn-by-turn steps that start at the requested coordinate, and up to five nearer shelters and hospitals. `?dest=` routes to one of those places through the existing CCH chain. The default call, with no `dest`, is still `route_to_shelter`. Overlay, zones, feed, and SSE take `?graph=`. Reports may send the same id in the JSON body. Unknown ids are 400.
+
+`POST /api/area/city/mumbai` and `/nyc` crop the offline tile at the region centre (Goregaon, midtown). `POST /api/area/city/valencia` and `POST /api/area/valencia` still load the curated Paiporta corridor (`valencia_corridor.json`, graph `valencia`). The city buttons in the map call `/api/area/load` instead: if the last GPS fix is inside that city's box, the tile is centred on the fix and navigation follows `watchPosition`; otherwise the tile uses the centre above and the puck simulates movement along the route. The destination card names the shelter or hospital, the distance, and the ETA. The active pin is marked Destination, and the camera fits the route.
+
+If Overpass fails outside a bundled region, the job status is `failed` and the map shows the city picker straight away. The map also stops if the status message does not change for 45 seconds.
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/area/load \
   -H 'content-type: application/json' \
-  -d '{"lat":19.076,"lon":72.877,"radius_m":1000}'
+  -d '{"lat":19.1663,"lon":72.8526,"radius_m":2500}'
 
 curl "http://127.0.0.1:8000/api/area/status?job_id=JOB"
 
@@ -78,10 +88,10 @@ curl -X POST http://127.0.0.1:8000/api/area/city/nyc
 
 curl 'http://127.0.0.1:8000/api/route?lat=39.4294&lon=-0.4183&graph=valencia'
 
-curl 'http://127.0.0.1:8000/api/route?lat=19.076&lon=72.877&graph=mumbai'
+curl 'http://127.0.0.1:8000/api/route?lat=19.1663&lon=72.8526&graph=fl-p1915-p07285'
 ```
 
-Limits: radius 50–5000 m (default 2000), tile 0.05°, 4 uncached downloads per minute, 8 provisional shelters, four Overpass mirrors sharing a 40 s budget. An area with no shelter candidates has nowhere to route until Sahil's model, or a bundled city, supplies one. `ADMIN_TOKEN` still guards only `POST /api/admin/load-valencia`.
+Limits: radius 50–5000 m (default 2000; the map asks for 2500 inside a bundled region), tile 0.05°, 4 uncached Overpass downloads per minute, 8 provisional shelters, 4 hospitals, four Overpass mirrors sharing a 40 s budget. Offline tiles skip that limit. An area with no shelter candidates has nowhere to route until Sahil's model, or a bundled city, supplies one. `ADMIN_TOKEN` still guards only `POST /api/admin/load-valencia`.
 
 **Tracks:** Track 1 — Agents That Act on Connected Data (primary). Track 2 — Agent Memory & Coordination.
 

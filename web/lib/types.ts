@@ -10,6 +10,7 @@ export type Step = {
 
 export type Destination = {
   kind: "shelter" | "hospital" | string;
+  subtype?: string;
   id: string;
   name: string;
   lat: number | null;
@@ -21,6 +22,19 @@ export type Destination = {
   osmid?: number;
 };
 
+export type Alternative = {
+  id: string;
+  name: string;
+  role: string;
+  kind: string;
+  lat: number;
+  lon: number;
+  osmid: number;
+  distance_m: number;
+  capacity: number;
+  occupancy: number;
+};
+
 export type RoutePlan = {
   ok: boolean;
   stub?: string;
@@ -30,6 +44,8 @@ export type RoutePlan = {
   eta_s: number;
   origin: { osmid: number; name: string; lat: number; lon: number; dist_m?: number };
   destination: Destination;
+  distance_m?: number;
+  alternatives?: Alternative[];
   geojson: {
     type: "Feature";
     geometry: { type: "LineString"; coordinates: [number, number][] };

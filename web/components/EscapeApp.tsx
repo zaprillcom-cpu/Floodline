@@ -4,8 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { DesktopHud } from "@/components/DesktopHud";
 import { MobileShell } from "@/components/MobileShell";
-import { fetchFeed, fetchOverlay, fetchRoute, fetchZones, fileReport, loadArea, loadCity, type AreaJob } from "@/lib/api";
-import { bundledCity, type CitySlug } from "@/lib/cities";
+import { fetchFeed, fetchOverlay, fetchRoute, fetchZones, fileReport, loadArea, type AreaJob } from "@/lib/api";
+import { bundledCity, cityContains, type CitySlug } from "@/lib/cities";
 import {
   PAIPORTA,
   bannerFor,
@@ -48,6 +48,7 @@ export function EscapeApp() {
   const [mappingTitle, setMappingTitle] = useState("Mapping streets around you…");
   const [stageText, setStageText] = useState("Finding your position");
   const [chooser, setChooser] = useState(0);
+  const [travel, setTravel] = useState<"live" | "demo">("demo");
   const progressRef = useRef(0);
   const poseRef = useRef(pose);
   const seen = useRef(new Set<string>());
@@ -58,6 +59,10 @@ export function EscapeApp() {
   const modeRef = useRef<"local" | CitySlug | null>(null);
   const loadGen = useRef(0);
   const progressCap = useRef(18);
+  const lastFix = useRef<{ lat: number; lon: number } | null>(null);
+  const destRef = useRef<string | null>(null);
+  const navigatingRef = useRef(false);
+  navigatingRef.current = navigating;
   const rerouteRef = useRef<(lat: number, lon: number) => void>(() => {});
   poseRef.current = pose;
   routeRef.current = route;
@@ -101,9 +106,16 @@ export function EscapeApp() {
     setGraphId(id);
   }
 
-  async function refreshRoute(lat: number, lon: number, reason: "load" | "reroute" | "move", graph?: string | null) {
+  async function refreshRoute(
+    lat: number,
+    lon: number,
+    reason: "load" | "reroute" | "move",
+    graph?: string | null,
+    dest?: string | null,
+  ) {
     const previous = routeRef.current;
-    const plan = await fetchRoute(lat, lon, graph ?? graphRef.current);
+    const chosen = dest === undefined ? destRef.current : dest;
+    const plan = await fetchRoute(lat, lon, graph ?? graphRef.current, chosen);
     const nextCoords = plan.geojson.geometry.coordinates;
     const nextMetrics = lineMetrics(nextCoords);
     if (reason === "reroute" && previous) {
@@ -218,8 +230,12 @@ export function EscapeApp() {
     poseRef.current = here;
     setPose(here);
     try {
-      const area = await loadArea(lat, lon, undefined, noteArea, () => loadGen.current !== gen);
+      lastFix.current = { lat, lon };
+      setTravel("live");
+      destRef.current = null;
+      const area = await loadArea(lat, lon, 2500, noteArea, () => loadGen.current !== gen);
       if (loadGen.current !== gen) return;
+      if (area.place) setPlace(area.place);
       adoptGraph(area.graph);
       const [map, feed] = await Promise.all([fetchOverlay(area.graph), fetchFeed(0, area.graph)]);
       setOverlay(map);
@@ -341,28 +357,28 @@ export function EscapeApp() {
   async function openCity(slug: CitySlug) {
     const city = bundledCity(slug);
     if (!city) return;
-    loadGen.current += 1;
+    const gen = ++loadGen.current;
     modeRef.current = slug;
+    const fix = lastFix.current;
+    const useFix = fix != null && cityContains(city, fix.lat, fix.lon);
+    const lat = useFix ? fix.lat : city.lat;
+    const lon = useFix ? fix.lon : city.lon;
+    setTravel(useFix ? "live" : "demo");
+    destRef.current = null;
     setPlace(city.label);
     setMappingTitle(`Loading ${city.label}…`);
-    setStageText(`Reading the bundled ${city.label} extract`);
+    setStageText(useFix ? "Reading bundled streets around you" : `Reading bundled streets in ${city.label}`);
     progressCap.current = 70;
     setPhase("mapping");
     setMapProgress(12);
     setError(null);
     setNavigating(false);
-    const here = { lat: city.lat, lon: city.lon, bearing: 0 };
+    const here = { lat, lon, bearing: 0 };
     poseRef.current = here;
     setPose(here);
     try {
-      const area = await loadCity(slug);
-      if (area.center) {
-        const next = { lat: area.center.lat, lon: area.center.lon, bearing: 0 };
-        poseRef.current = next;
-        setPose(next);
-        here.lat = next.lat;
-        here.lon = next.lon;
-      }
+      const area = await loadArea(lat, lon, 2500, noteArea, () => loadGen.current !== gen);
+      if (loadGen.current !== gen) return;
       if (area.place) setPlace(area.place);
       adoptGraph(area.graph);
       const [map, feed] = await Promise.all([fetchOverlay(area.graph), fetchFeed(0, area.graph)]);
@@ -370,14 +386,52 @@ export function EscapeApp() {
       remember(feed.events, false);
       liveAfter.current = feed.cursor;
       armed.current = true;
-      await refreshRoute(here.lat, here.lon, "load", area.graph);
+      await refreshRoute(lat, lon, "load", area.graph);
       setMapProgress(100);
       setPhase("ready");
     } catch (exc) {
+      if (loadGen.current !== gen) return;
       revealCities();
       setError(exc instanceof Error ? exc.message : `${city.label} failed to load`);
     }
   }
+
+  function chooseDestination(id: string) {
+    destRef.current = id;
+    const here = poseRef.current;
+    setNavigating(false);
+    void refreshRoute(here.lat, here.lon, "move", graphRef.current, id).catch((exc: unknown) =>
+      setError(exc instanceof Error ? exc.message : "Could not change destination"),
+    );
+  }
+
+  useEffect(() => {
+    if (travel !== "live" || !navigator.geolocation) return;
+    const id = navigator.geolocation.watchPosition(
+      (position) => {
+        const lat = position.coords.latitude;
+        const lon = position.coords.longitude;
+        lastFix.current = { lat, lon };
+        const coords = routeRef.current?.geojson.geometry.coordinates ?? null;
+        let bearing = poseRef.current.bearing;
+        if (coords && coords.length >= 2) {
+          const metrics = lineMetrics(coords);
+          const along = snapProgress(coords, metrics.cum, { lat, lon });
+          bearing = pointAlong(coords, metrics.cum, along).bearing;
+          if (navigatingRef.current) {
+            progressRef.current = along;
+            setProgress(along);
+          }
+        }
+        const next = { lat, lon, bearing };
+        poseRef.current = next;
+        setPose(next);
+      },
+      () => undefined,
+      { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 },
+    );
+    return () => navigator.geolocation.clearWatch(id);
+  }, [travel]);
 
   useEffect(() => {
     let cancelled = false;
@@ -458,6 +512,7 @@ export function EscapeApp() {
       else locate();
     },
     onCity: (slug: CitySlug) => void openCity(slug),
+    onDestination: chooseDestination,
     chooser,
     onGo: goToPlace,
     place,
@@ -476,8 +531,14 @@ export function EscapeApp() {
         zones={zones}
         pins={overlay?.pins ?? []}
         activePinId={route?.destination.id ?? null}
+        destPoint={
+          route?.destination.lat != null && route.destination.lon != null
+            ? { lat: route.destination.lat, lon: route.destination.lon }
+            : null
+        }
         flood={flood}
         navigating={navigating}
+        simulate={travel !== "live"}
         progressRef={progressRef}
         paddingRight={mobile ? 12 : width >= 1024 ? 400 : 340}
         mobile={mobile}

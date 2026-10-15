@@ -40,6 +40,7 @@ type Props = {
   onFlood: () => void;
   onRetry: () => void;
   onCity: (slug: CitySlug) => void;
+  onDestination: (id: string) => void;
   onGo: (place: SavedPlace) => void;
   place: string;
   mapping: boolean;
@@ -88,6 +89,7 @@ export function DesktopHud(props: Props) {
             onFlood={props.onFlood}
             onRetry={props.onRetry}
             onCity={props.onCity}
+            onDestination={props.onDestination}
             place={props.place}
             mapping={props.mapping}
           />
