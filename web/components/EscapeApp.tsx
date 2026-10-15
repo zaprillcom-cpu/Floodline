@@ -4,12 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { DesktopHud } from "@/components/DesktopHud";
 import { MobileShell } from "@/components/MobileShell";
-import { fetchFeed, fetchOverlay, fetchRoute, fetchZones, fileReport, resetNetwork } from "@/lib/api";
+import { fetchFeed, fetchOverlay, fetchRoute, fetchZones, fileReport, loadArea, loadValenciaDemo } from "@/lib/api";
 import {
   PAIPORTA,
   bannerFor,
   formatDistance,
-  insideBbox,
   lineMetrics,
   pointAlong,
   snapProgress,
@@ -24,6 +23,13 @@ type Notice = { title: string; detail: string } | null;
 
 function eventKey(event: FeedEvent): string {
   return `${event.type}:${event.id ?? event.title}:${event.seq}`;
+}
+
+function stageLabel(value: number): string {
+  if (value < 18) return "Finding your position";
+  if (value < 48) return "Downloading driveable streets";
+  if (value < 78) return "Building the CCH index";
+  return "Placing shelters";
 }
 
 export function EscapeApp() {
@@ -41,12 +47,19 @@ export function EscapeApp() {
   const [tab, setTab] = useState<TabId>("escape");
   const [progress, setProgress] = useState(0);
   const [pose, setPose] = useState<Pose>({ ...PAIPORTA, bearing: 0 });
+  const [graphId, setGraphId] = useState<string | null>(null);
+  const [phase, setPhase] = useState<"boot" | "mapping" | "ready" | "choose">("boot");
+  const [mapProgress, setMapProgress] = useState(4);
+  const [place, setPlace] = useState("Nearby");
+  const [mappingTitle, setMappingTitle] = useState("Mapping streets around you…");
   const progressRef = useRef(0);
   const poseRef = useRef(pose);
   const seen = useRef(new Set<string>());
   const liveAfter = useRef(0);
   const armed = useRef(false);
   const routeRef = useRef<RoutePlan | null>(null);
+  const graphRef = useRef<string | null>(null);
+  const modeRef = useRef<"local" | "valencia" | null>(null);
   const rerouteRef = useRef<(lat: number, lon: number) => void>(() => {});
   poseRef.current = pose;
   routeRef.current = route;
@@ -79,9 +92,20 @@ export function EscapeApp() {
     rerouteRef.current(here.lat, here.lon);
   }, []);
 
-  async function refreshRoute(lat: number, lon: number, reason: "load" | "reroute" | "move") {
+  function adoptGraph(id: string) {
+    if (graphRef.current && graphRef.current !== id) {
+      seen.current = new Set();
+      setEvents([]);
+      setRoute(null);
+      armed.current = false;
+    }
+    graphRef.current = id;
+    setGraphId(id);
+  }
+
+  async function refreshRoute(lat: number, lon: number, reason: "load" | "reroute" | "move", graph?: string | null) {
     const previous = routeRef.current;
-    const plan = await fetchRoute(lat, lon);
+    const plan = await fetchRoute(lat, lon, graph ?? graphRef.current);
     const nextCoords = plan.geojson.geometry.coordinates;
     const nextMetrics = lineMetrics(nextCoords);
     if (reason === "reroute" && previous) {
@@ -118,32 +142,17 @@ export function EscapeApp() {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const [map, feed] = await Promise.all([fetchOverlay(), fetchFeed(0)]);
-        if (cancelled) return;
-        setOverlay(map);
-        remember(feed.events, false);
-        liveAfter.current = feed.cursor;
-        armed.current = true;
-        if (map.loaded) {
-          await refreshRoute(PAIPORTA.lat, PAIPORTA.lon, "load");
-        }
-      } catch (exc) {
-        if (!cancelled) setError(exc instanceof Error ? exc.message : "API unreachable");
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // Initial load only.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (phase !== "mapping") return;
+    const id = window.setInterval(() => {
+      setMapProgress((value) => (value >= 90 ? value : value + Math.max(0.8, (90 - value) * 0.045)));
+    }, 140);
+    return () => window.clearInterval(id);
+  }, [phase]);
 
   useEffect(() => {
+    if (!graphId) return;
     let poll: number | null = null;
-    const source = new EventSource("/api/stream");
+    const source = new EventSource(`/api/stream?graph=${encodeURIComponent(graphId)}`);
     const take = (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data) as FeedEvent;
@@ -164,7 +173,7 @@ export function EscapeApp() {
     source.onerror = () => {
       if (poll != null) return;
       poll = window.setInterval(() => {
-        void fetchFeed(liveAfter.current)
+        void fetchFeed(liveAfter.current, graphId)
           .then((body) => {
             liveAfter.current = Math.max(liveAfter.current, body.cursor);
             remember(body.events, true);
@@ -176,7 +185,7 @@ export function EscapeApp() {
       source.close();
       if (poll != null) window.clearInterval(poll);
     };
-  }, [remember]);
+  }, [graphId, remember]);
 
   const onSample = useCallback((next: number, sample: Pose) => {
     progressRef.current = next;
@@ -185,28 +194,60 @@ export function EscapeApp() {
     setPose(sample);
   }, []);
 
-  async function locate() {
-    const bbox = overlay?.bbox;
-    if (!navigator.geolocation || !bbox) {
-      setError("Location is unavailable. Staying in Paiporta.");
+  async function loadAround(lat: number, lon: number) {
+    modeRef.current = "local";
+    setPlace("Nearby");
+    setMappingTitle("Mapping streets around you…");
+    setPhase("mapping");
+    setError(null);
+    setNavigating(false);
+    const here = { lat, lon, bearing: poseRef.current.bearing };
+    poseRef.current = here;
+    setPose(here);
+    try {
+      const area = await loadArea(lat, lon);
+      adoptGraph(area.graph);
+      const [map, feed] = await Promise.all([fetchOverlay(area.graph), fetchFeed(0, area.graph)]);
+      setOverlay(map);
+      remember(feed.events, false);
+      liveAfter.current = feed.cursor;
+      armed.current = true;
+      await refreshRoute(lat, lon, "load", area.graph);
+      setMapProgress(100);
+      setPhase("ready");
+    } catch (exc) {
+      setPhase("choose");
+      setMapProgress(0);
+      const message = exc instanceof Error ? exc.message : "Could not map this area";
+      setError(
+        /valencia demo/i.test(message)
+          ? message
+          : `${message} Open the Valencia demo, which uses the bundled extract.`,
+      );
+    }
+  }
+
+  function locate() {
+    const geo = navigator.geolocation;
+    if (!geo) {
+      setPhase("choose");
+      setError("This browser has no location. Open the Valencia demo.");
       return;
     }
-    navigator.geolocation.getCurrentPosition(
+    setMappingTitle("Mapping streets around you…");
+    setPhase("mapping");
+    setMapProgress(8);
+    setError(null);
+    geo.getCurrentPosition(
       (position) => {
-        const lat = position.coords.latitude;
-        const lon = position.coords.longitude;
-        if (!insideBbox(lat, lon, bbox)) {
-          setError("That fix is outside the Valencia corridor. Staying on the simulated position.");
-          return;
-        }
-        setError(null);
-        setNavigating(false);
-        void refreshRoute(lat, lon, "move").catch((exc: unknown) =>
-          setError(exc instanceof Error ? exc.message : "Could not route"),
-        );
+        void loadAround(position.coords.latitude, position.coords.longitude);
       },
-      () => setError("Location was denied. Staying on the simulated position."),
-      { enableHighAccuracy: true, timeout: 8000 },
+      () => {
+        setPhase("choose");
+        setMapProgress(0);
+        setError("Location was denied. Open the Valencia demo to use the bundled extract.");
+      },
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 15000 },
     );
   }
 
@@ -214,7 +255,8 @@ export function EscapeApp() {
     setBusy(true);
     setError(null);
     try {
-      const state = await fileReport(text);
+      const active = graphRef.current;
+      const state = await fileReport(text, active);
       const mapped: FeedEvent[] = (state.decisions || []).map((decision) => ({
         type: decision.kind === "route" ? "route" : "decision",
         id: decision.id,
@@ -228,14 +270,14 @@ export function EscapeApp() {
         algo: decision.algo,
       }));
       remember(mapped, false);
-      const nextOverlay = await fetchOverlay();
+      const nextOverlay = await fetchOverlay(active);
       setOverlay(nextOverlay);
       const here = poseRef.current;
       const before = routeRef.current;
       const remainBefore = before
         ? before.eta_s * (1 - progressRef.current / Math.max(lineMetrics(before.geojson.geometry.coordinates).total, 1))
         : 0;
-      const plan = await fetchRoute(here.lat, here.lon);
+      const plan = await fetchRoute(here.lat, here.lon, active);
       const nextCoords = plan.geojson.geometry.coordinates;
       const nextMetrics = lineMetrics(nextCoords);
       progressRef.current = snapProgress(nextCoords, nextMetrics.cum, here);
@@ -249,7 +291,7 @@ export function EscapeApp() {
         detail: `${sign}${Math.abs(delta)} s. ${state.narrative?.closure || "The closed edge is out of the path."}`,
       });
       if (flood) {
-        const shaded = await fetchZones();
+        const shaded = await fetchZones(graphRef.current);
         setZones(shaded.zones);
       }
     } catch (exc) {
@@ -271,7 +313,7 @@ export function EscapeApp() {
     setFlood(next);
     if (!next) return;
     try {
-      const shaded = await fetchZones();
+      const shaded = await fetchZones(graphRef.current);
       setZones(shaded.zones);
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "Cut-off zones are unavailable");
@@ -279,19 +321,75 @@ export function EscapeApp() {
   }
 
   async function loadDemo() {
-    setBusy(true);
+    modeRef.current = "valencia";
+    setPlace("Valencia");
+    setMappingTitle("Loading the Valencia demo…");
+    setPhase("mapping");
+    setMapProgress(12);
     setError(null);
+    setNavigating(false);
+    const here = { ...PAIPORTA, bearing: 0 };
+    poseRef.current = here;
+    setPose(here);
     try {
-      await resetNetwork();
-      const map = await fetchOverlay();
+      const area = await loadValenciaDemo();
+      adoptGraph(area.graph);
+      const [map, feed] = await Promise.all([fetchOverlay(area.graph), fetchFeed(0, area.graph)]);
       setOverlay(map);
-      await refreshRoute(PAIPORTA.lat, PAIPORTA.lon, "load");
+      remember(feed.events, false);
+      liveAfter.current = feed.cursor;
+      armed.current = true;
+      await refreshRoute(PAIPORTA.lat, PAIPORTA.lon, "load", area.graph);
+      setMapProgress(100);
+      setPhase("ready");
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : "Demo load failed");
-    } finally {
-      setBusy(false);
+      setPhase("choose");
+      setMapProgress(0);
+      setError(exc instanceof Error ? exc.message : "Valencia demo failed");
     }
   }
+
+  useEffect(() => {
+    let cancelled = false;
+    const geo = navigator.geolocation;
+    if (!geo) {
+      setPhase("choose");
+      return;
+    }
+    void (async () => {
+      let permission: PermissionState | "unknown" = "unknown";
+      try {
+        const status = await navigator.permissions?.query({ name: "geolocation" });
+        permission = status?.state ?? "unknown";
+      } catch {
+        permission = "unknown";
+      }
+      if (cancelled) return;
+      if (permission === "denied") {
+        setPhase("choose");
+        return;
+      }
+      setMappingTitle("Mapping streets around you…");
+      setPhase("mapping");
+      setMapProgress(8);
+      geo.getCurrentPosition(
+        (position) => {
+          if (!cancelled) void loadAround(position.coords.latitude, position.coords.longitude);
+        },
+        () => {
+          if (cancelled) return;
+          setPhase("choose");
+          setMapProgress(0);
+        },
+        { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 },
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Ask once on first paint. Granted permission loads this tile; a denial shows the chooser.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function goToPlace(place: SavedPlace) {
     setNavigating(false);
@@ -324,9 +422,15 @@ export function EscapeApp() {
     onStop: () => setNavigating(false),
     onLocate: () => void locate(),
     onFlood: () => void toggleFlood(),
-    onRetry: () => void refreshRoute(pose.lat, pose.lon, "load").catch((exc: unknown) => setError(String(exc))),
+    onRetry: () => {
+      if (modeRef.current === "valencia") void loadDemo();
+      else if (modeRef.current === "local") void loadAround(poseRef.current.lat, poseRef.current.lon);
+      else locate();
+    },
     onDemo: () => void loadDemo(),
     onGo: goToPlace,
+    place,
+    mapping: phase === "mapping" || phase === "boot",
   };
 
   return (
@@ -350,8 +454,17 @@ export function EscapeApp() {
       />
       <header className="float-brand">
         <span>Floodline</span>
-        <strong>Valencia</strong>
+        <strong>{place}</strong>
       </header>
+      {(phase === "mapping" || phase === "boot") && (
+        <div className="map-loading" role="status" aria-live="polite" aria-busy="true">
+          <h2>{mappingTitle}</h2>
+          <p>{stageLabel(mapProgress)}</p>
+          <div className="progress-track" aria-hidden="true">
+            <span style={{ width: `${Math.min(100, Math.round(mapProgress))}%` }} />
+          </div>
+        </div>
+      )}
       {flood && <div className="vision-chip">Flood vision</div>}
       {banner && (
         <div className="banner" aria-live="polite">

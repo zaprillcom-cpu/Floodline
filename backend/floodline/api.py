@@ -5,13 +5,23 @@ from __future__ import annotations
 import asyncio
 import time
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from floodline.admin_auth import require_admin
 from floodline.analysis import cut_off_areas, evac_capacity, prove_cutoff, record_corridor
+from floodline.area import (
+    DEFAULT_RADIUS_M,
+    MAX_RADIUS_M,
+    MIN_RADIUS_M,
+    OverpassFailed,
+    RateLimited,
+    allowed_graph_id,
+    load_citizen_area,
+    load_valencia_demo,
+)
 from floodline.config import Settings
 from floodline.db import get_graph
 from floodline.escape import cutoff_zones, note_reroute, overlay_payload, route_payload
@@ -31,6 +41,31 @@ app.add_middleware(
 
 class ReportIn(BaseModel):
     text: str = Field(default=DEMO_REPORT, min_length=1)
+    graph: str | None = None
+
+
+class AreaIn(BaseModel):
+    lat: float = Field(..., ge=-90, le=90)
+    lon: float = Field(..., ge=-180, le=180)
+    radius_m: int = Field(default=DEFAULT_RADIUS_M, ge=MIN_RADIUS_M, le=MAX_RADIUS_M)
+
+
+def _client_key(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip() or "unknown"
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+def _settings_for(graph: str | None) -> Settings:
+    base = Settings.from_env()
+    if graph is None or graph == "":
+        return base
+    if not allowed_graph_id(graph, default=base.graph):
+        raise HTTPException(status_code=400, detail="Unknown graph id")
+    return base.for_graph(graph)
 
 
 def _guard(fn):
@@ -63,13 +98,15 @@ def reset() -> dict:
 
 
 @app.post("/api/scenario/report")
-def report(body: ReportIn) -> dict:
+def report(body: ReportIn, graph: str | None = Query(default=None)) -> dict:
+    cfg = _settings_for(graph or body.graph)
+
     def run():
-        state = file_report(body.text)
+        state = file_report(body.text, cfg)
         closed = state.get("closed_roads") or []
         road_id = closed[-1] if closed else ""
         if road_id:
-            state["citizen_reroute"] = note_reroute(road_id)
+            state["citizen_reroute"] = note_reroute(road_id, cfg)
         return state
 
     return _guard(run)
@@ -139,32 +176,74 @@ def load_valencia(
     return _guard(run)
 
 
+@app.post("/api/area/load")
+def area_load(body: AreaIn, request: Request) -> dict:
+    """Drive network around a citizen. No admin token. Radius is capped.
+
+    A repeated load of the same rounded tile is served from FalkorDB.
+    """
+
+    def run():
+        return load_citizen_area(
+            body.lat,
+            body.lon,
+            body.radius_m,
+            client=_client_key(request),
+        )
+
+    try:
+        return run()
+    except RateLimited as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except OverpassFailed as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/area/valencia")
+def area_valencia() -> dict:
+    """One-tap demo. Loads the bundled extract into the ``valencia`` graph.
+
+    Does not call Overpass and does not require ``ADMIN_TOKEN``. A warm graph
+    is left in place.
+    """
+    return _guard(load_valencia_demo)
+
+
 @app.get("/api/route")
 def citizen_route(
     lat: float = Query(..., ge=-90, le=90),
     lon: float = Query(..., ge=-180, le=180),
+    graph: str | None = Query(default=None),
 ) -> dict:
     """GeoJSON line, turn steps, and ETA. Shelter choice is the Sahil stub."""
-    return _guard(lambda: route_payload(lat, lon))
+    cfg = _settings_for(graph)
+    return _guard(lambda: route_payload(lat, lon, cfg))
 
 
 @app.get("/api/escape/overlay")
-def escape_overlay() -> dict:
-    return _guard(overlay_payload)
+def escape_overlay(graph: str | None = Query(default=None)) -> dict:
+    cfg = _settings_for(graph)
+    return _guard(lambda: overlay_payload(cfg))
 
 
 @app.get("/api/escape/zones")
-def escape_zones() -> dict:
+def escape_zones(graph: str | None = Query(default=None)) -> dict:
     """Flood-vision shades. WCC-to-shelter is the Sahil stub."""
-    return _guard(lambda: cutoff_zones(get_graph()))
+    cfg = _settings_for(graph)
+    return _guard(lambda: cutoff_zones(get_graph(cfg)))
 
 
 @app.get("/api/feed")
-def feed(since: int = 0) -> dict:
+def feed(since: int = 0, graph: str | None = Query(default=None)) -> dict:
     """JSON twin of the SSE stream, for clients that have to poll."""
+    cfg = _settings_for(graph)
 
     def run():
-        events = collect_events(get_graph(), since)
+        events = collect_events(get_graph(cfg), since)
         if len(events) > 40:
             events = events[-40:]
         cursor = since
@@ -175,13 +254,14 @@ def feed(since: int = 0) -> dict:
     return _guard(run)
 
 
-def _pull_events(since: int) -> list[dict]:
-    return collect_events(get_graph(), since)
+def _pull_events(since: int, settings: Settings | None = None) -> list[dict]:
+    return collect_events(get_graph(settings), since)
 
 
 @app.get("/api/stream")
-async def stream(once: bool = False) -> StreamingResponse:
+async def stream(once: bool = False, graph: str | None = Query(default=None)) -> StreamingResponse:
     """Server-sent Task, Decision, and Route events. Heartbeat every 15 s."""
+    cfg = _settings_for(graph)
 
     async def generate():
         since = 0
@@ -189,7 +269,7 @@ async def stream(once: bool = False) -> StreamingResponse:
         last_beat = time.monotonic()
         while True:
             try:
-                batch = await asyncio.to_thread(_pull_events, since)
+                batch = await asyncio.to_thread(_pull_events, since, cfg)
             except Exception as exc:
                 yield format_sse("error", {"detail": str(exc)})
                 batch = []

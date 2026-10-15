@@ -40,6 +40,8 @@ type Props = {
   onRetry: () => void;
   onDemo: () => void;
   onGo: (place: SavedPlace) => void;
+  place: string;
+  mapping: boolean;
 };
 
 export function DesktopHud(props: Props) {
@@ -48,7 +50,7 @@ export function DesktopHud(props: Props) {
     <aside className="hud" aria-label="Floodline">
       <header className="brand">
         <span>Floodline</span>
-        <strong>Valencia</strong>
+        <strong>{props.place}</strong>
       </header>
       <div className="seg" role="tablist">
         {TABS.map((item) => (
@@ -81,6 +83,8 @@ export function DesktopHud(props: Props) {
             onFlood={props.onFlood}
             onRetry={props.onRetry}
             onDemo={props.onDemo}
+            place={props.place}
+            mapping={props.mapping}
           />
         )}
         {tab === "report" && (

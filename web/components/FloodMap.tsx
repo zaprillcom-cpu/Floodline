@@ -370,8 +370,20 @@ export function FloodMap({
   useEffect(() => {
     if (navigating) return;
     const puck = puckRef.current;
+    const map = mapRef.current;
     if (!puck) return;
     puck.setLngLat([center.lon, center.lat]);
+    if (!map) return;
+    const here = map.getCenter();
+    if (Math.abs(here.lat - center.lat) > 0.01 || Math.abs(here.lng - center.lon) > 0.01) {
+      map.easeTo({
+        center: [center.lon, center.lat],
+        zoom: 15.2,
+        pitch: 58,
+        duration: 900,
+        essential: true,
+      });
+    }
   }, [center.lat, center.lon, navigating]);
 
   return <div ref={ref} className="map-canvas" />;

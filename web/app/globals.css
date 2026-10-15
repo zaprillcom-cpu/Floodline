@@ -641,6 +641,54 @@ button { cursor: pointer; }
   font-size: 12px;
 }
 
+.map-loading {
+  position: absolute;
+  z-index: 30;
+  left: 50%;
+  top: 18%;
+  transform: translateX(-50%);
+  width: min(420px, calc(100vw - 36px));
+  padding: 22px 22px 18px;
+  border-radius: 22px;
+  background: var(--glass);
+  border: 1px solid var(--stroke);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  box-shadow: var(--shadow);
+}
+
+.map-loading h2 {
+  margin: 0 0 6px;
+  font-size: 22px;
+  letter-spacing: -0.03em;
+  font-weight: 640;
+}
+
+.map-loading p {
+  margin: 0 0 14px;
+  color: var(--secondary);
+  font-size: 13px;
+}
+
+.progress-track {
+  height: 4px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  background: white;
+  transition: width 180ms linear;
+}
+
+@media (max-width: 767px) {
+  .map-loading { top: 12%; }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .switch span, .flood-veil { transition: none; }
+  .switch span, .flood-veil, .progress-track span { transition: none; }
 }

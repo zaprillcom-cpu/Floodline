@@ -19,6 +19,8 @@ type Props = {
   onFlood: () => void;
   onRetry: () => void;
   onDemo: () => void;
+  place?: string;
+  mapping?: boolean;
 };
 
 export function EscapePanel({
@@ -37,6 +39,8 @@ export function EscapePanel({
   onFlood,
   onRetry,
   onDemo,
+  place = "Nearby",
+  mapping = false,
 }: Props) {
   const dest = route?.destination;
   const remainRatio = total > 0 ? Math.max(0, 1 - progress / total) : 1;
@@ -47,12 +51,12 @@ export function EscapePanel({
   return (
     <div className="stack">
       <p className="kicker">Escape</p>
-      <h2 className="display">{eta == null ? "Paiporta" : formatEta(eta)}</h2>
+      <h2 className="display">{eta == null ? place : formatEta(eta)}</h2>
       <p className="lede">
         {dest
           ? `to ${dest.name}`
           : loaded
-            ? "Nearest open shelter on the Valencia street graph."
+            ? `Nearest open shelter on the ${place === "Valencia" ? "Valencia" : "loaded"} street graph.`
             : "The street graph is not loaded yet."}
       </p>
       {dest && (
@@ -126,13 +130,15 @@ export function EscapePanel({
           <strong>{overlay?.counts?.passable ?? "—"}</strong>
         </div>
       </div>
-      {loaded === false && (
+      {(!route || error) && !mapping && (
         <div className="row">
-          <button type="button" className="btn ghost" onClick={onRetry} disabled={busy}>
-            Retry
-          </button>
+          {error && (
+            <button type="button" className="btn ghost" onClick={onRetry} disabled={busy}>
+              Retry
+            </button>
+          )}
           <button type="button" className="btn ghost" onClick={onDemo} disabled={busy}>
-            Load synthetic demo
+            Valencia demo
           </button>
         </div>
       )}

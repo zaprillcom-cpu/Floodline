@@ -61,7 +61,7 @@ def test_route_requires_coordinates():
 
 
 def test_stream_once_emits_events_and_a_heartbeat(monkeypatch):
-    def fake_pull(since):
+    def fake_pull(since, settings=None):
         if since >= 4:
             return []
         return [
