@@ -1,12 +1,56 @@
 # Floodline
 
-Disaster-response routing over a whole road network, not one car at a time. A citizen report closes a bridge in the graph. An ambulance’s route is recomputed there, and the reason is stored next to the edges that caused it.
+You're in a flooding Valencia street. Floodline routes you on real streets to the nearest open shelter, computed in FalkorDB, and bends the line when a report closes a road ahead. Scout, Dispatcher, and Analyst show their work live.
 
-This is a solo entry for [WeMakeDevs × FalkorDB Graph Hacks](https://github.com/zaprillcom-cpu/Floodline). The city graph is an OpenStreetMap drive network for the Valencia flood corridor. A 10-node synthetic network remains as the offline fallback and as the small map demo.
+This is a solo entry for [WeMakeDevs × FalkorDB Graph Hacks](https://github.com/zaprillcom-cpu/Floodline). The city graph is an OpenStreetMap drive network for the Valencia flood corridor. A 10-node synthetic network remains as the offline fallback.
+
+Live: API [floodline-production.up.railway.app](https://floodline-production.up.railway.app) · web [floodline-xi.vercel.app](https://floodline-xi.vercel.app). The web app is a full-screen MapLibre map (OpenFreeMap dark, 3D buildings). Desktop gets a side HUD. A phone gets bottom tabs (Escape, Report, Live, Me) and a bottom sheet. Navigation is simulated GPS along the FalkorDB line.
+
+## Who owns what
+
+Sahil writes and explains the graph model, the Cypher, and the LLM planner. Cursor Grok 4.7 built the slices marked AI-assist. Stubs marked `TODO(Sahil)` fall back to the existing router and the keyword planner so the map still runs. Full note: [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
+
+| Task | Owner | Where |
+|---|---|---|
+| Valencia extract inside `backend/`, `POST /api/admin/load-valencia` | AI-assist | `backend/floodline/api.py`, `backend/data/osm/` |
+| Shelter and Citizen model (`NEAR`, `AT`, `CLOSES`) | Sahil | `ensure_shelter_citizen_model` in `backend/floodline/stubs.py` |
+| `route_to_shelter` (snap → top-k open shelters → CCH) | Sahil | `route_to_shelter` in `backend/floodline/stubs.py` |
+| MapLibre map, OpenFreeMap dark, 3D buildings | AI-assist | `web/components/FloodMap.tsx` |
+| Design tokens | AI-assist | `web/lib/theme.ts` |
+| LLM planner (`geocode`, `close_road`, `severity`) | Sahil | `plan_with_llm` in `backend/floodline/agents/llm_planner.py` |
+| Report geocoding onto ROAD edges | Sahil | `geocode_report` in `backend/floodline/stubs.py` |
+| Reroute fan-out and Decision explanations | Sahil | `reroute_affected` in `backend/floodline/stubs.py` |
+| Snap and shelter-reachability WCC | Sahil | `snap_point`, `shelter_reachability` in `backend/floodline/stubs.py` |
+| SSE `GET /api/stream` | AI-assist | `backend/floodline/events.py` |
+| Turn-by-turn steps and simulated GPS | AI-assist | `backend/floodline/navigation.py`, `web/lib/geo.ts` |
+| Live agent feed | AI-assist | `web/components/AgentFeed.tsx` |
+| Mobile tabs and bottom sheet | AI-assist | `web/components/MobileShell.tsx` |
+| Desktop HUD | AI-assist | `web/components/DesktopHud.tsx` |
+| Flood vision (UI). WCC query is Sahil's | AI-assist / Sahil | `FloodMap.tsx` / `shelter_reachability` |
+| Me tab (localStorage) | AI-assist | `web/components/MePanel.tsx` |
+| This README, disclosure, queries draft | AI-assist draft, Sahil reviews | this file, `AI_DISCLOSURE.md`, `docs/queries.md` |
+| Demo video | Sahil | — |
+
+## Environment
+
+| Where | Variable | Value |
+|---|---|---|
+| Railway (service root `backend`) | `ADMIN_TOKEN` | secret. Guards `POST /api/admin/load-valencia`. Do not commit it. |
+| Vercel | `FLOODLINE_API_ORIGIN` | `https://floodline-production.up.railway.app` (no trailing slash) |
+| Local API | `FALKORDB_HOST`, `FALKORDB_PORT`, `FALKORDB_GRAPH` | see `.env.example` |
+
+Load the corridor once the token is set:
+
+```bash
+curl -X POST https://floodline-production.up.railway.app/api/admin/load-valencia \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+`/api/state` should then report `loaded: true` with 2526 intersections and 4742 ROAD edges. Routing stays in FalkorDB: CCH, then A*, then `algo.SPpaths`.
 
 **Tracks:** Track 1 — Agents That Act on Connected Data (primary). Track 2 — Agent Memory & Coordination.
 
-Live deployment and the demo video are not in this slice. Local setup below is the way to reproduce it.
+The live URLs are above. The demo video is still Sahil's. Local setup below is how to reproduce the graph.
 
 ## What this slice does
 
@@ -14,7 +58,7 @@ Live deployment and the demo video are not in this slice. Local setup below is t
 2. The synthetic loader writes 10 `Intersection` nodes, directed `ROAD` edges (`travel_s`, `capacity`), and `PASSABLE` mirrors. The OSM loader is the next section.
 3. Scout closes the V-31 Paiporta bridge: `travel_s = 1000000000`, `capacity = 0`, and the `PASSABLE` edges for that road are deleted.
 4. Dispatcher recomputes A-7’s route. Before: **215 s** across the bridge. After: **320 s** via Alfafar and Sedaví. The `Decision` node says why.
-5. A Next.js map draws the old path (grey dash) and the new path (green).
+5. The Next.js app draws that route on a MapLibre map of Valencia. The older schematic view is no longer the home page.
 
 Checked on v4.22.0: `db.idx.cch.query`, `algo.AStar`, and `algo.SPpaths` all return 215 s before the closure and 320 s after. The running router is **CCH**. If CCH or A* is missing or still walks a closed edge, routing falls through to `algo.SPpaths`.
 
@@ -186,7 +230,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3000. **Reset network** reloads the graph and the 215 s route. **File flood report** sends the text in the box (the default names the V-31 bridge). The map then shows the grey route and the green detour, and the panel quotes each Decision, including the explanation. **Cut off Paiporta** closes the roads that leave Paiporta, paints that district, and adds the WCC and max-flow decisions (1200 → 0 veh/h, with the saturated critical edge).
+Open http://localhost:3000. The map is Valencia at night. **Start navigation** moves a simulated position along the FalkorDB line and the banner names the next turn. **Water on the road ahead** files a report with a coordinate on the route, which the keyword planner closes via `close_nearest`. The closed segment turns red and the line is requested again. Live lists Scout, Dispatcher, and Analyst from the SSE stream. On a phone-width window the desktop HUD is gone and the bottom tabs are Escape, Report, Live, and Me.
 
 Tests:
 
@@ -238,7 +282,7 @@ The October 2024 DANA floods in Valencia killed more than 200 people. Floodline 
 
 ## AI assistance
 
-Cursor Grok 4.7 wrote this slice in Cursor. The in-product planner is a stub. Full note: [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
+Cursor Grok 4.7 wrote the loader, the API, the map, and the stubs. Sahil owns the Shelter/Citizen model, `route_to_shelter`, reroute fan-out, snap, shelter WCC, report geocoding, and the LLM planner. The in-product planner is still the keyword stub. Full note: [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
 ## Team
 

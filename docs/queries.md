@@ -310,3 +310,29 @@ RETURN maxFlow, edges, edgeFlows
 ```
 
 On the synthetic network this is 1200 veh/h before the corridor closure and 0 after. The critical edge is the saturated edge with the largest flow: V-31 Paiporta bridge, 600 of capacity 600.
+
+## Planned queries — OWNER: Sahil (not implemented)
+
+These are the citizen-escape queries. The Cypher is Sahil's. The names below are the Python stubs that currently fall back to the existing router, the keyword planner, or `cut_off_areas`. Do not treat this section as a query that already runs.
+
+| Question | Stub | Fallback that runs today |
+|---|---|---|
+| Snap a point to the nearest `Intersection`, and write `(:Citizen)-[:AT]->` | `snap_point` | `tools.snap_to_road` |
+| Nearest *open* `Shelter` by route cost: snap, top-k `NEAR`, then CCH | `route_to_shelter` | `routing.route` (CCH, else A*, else SPpaths) to existing `Shelter-ACCESS`, else `best_hospital` |
+| Close the `ROAD` edges a `Report` names | `geocode_report` | keyword `plan` (`close_road` / `close_nearest` / `noop`). `edges` stays empty |
+| Which citizens' active routes use a closed edge, then rewrite the route and a `Decision` (`reason`, old ETA, new ETA, closed edge) with `(:Decision)-[:REROUTED]->(:Citizen)` | `reroute_affected` | returns no citizens. The ambulance `Dispatcher.reroute` still runs |
+| Which areas cannot reach an open shelter, via WCC | `shelter_reachability` | `analysis.cut_off_areas` (WCC on `PASSABLE` toward hospitals) |
+| Free-text report → tool calls `geocode`, `close_road`, `severity`, schema-validated | `plan_with_llm` | `agents.planner.plan` |
+| Create `(:Shelter)-[:NEAR]->(:Intersection)`, Citizen, `(:Report)-[:CLOSES]`, and the indexes | `ensure_shelter_citizen_model` | read-only counts. Writes nothing |
+
+Model Sahil adds, on top of the labels already loaded:
+
+```
+(:Shelter {id,name,capacity,occupancy,open,lat,lon})-[:NEAR {dist_m}]->(:Intersection)
+(:Citizen {id,lat,lon,updated_at})-[:AT]->(:Intersection)
+(:Report)-[:CLOSES]->(the ROAD edges it closes)
+(:Task)-[:FOR]->(:Report)
+(:Decision)-[:REROUTED]->(:Citizen)
+```
+
+`GET /api/route` calls `route_to_shelter` and then builds the GeoJSON line and the turn steps in `navigation.py`. Replacing the stub body is enough for the map to start using the real shelter query. The step text and the SSE feed do not need to change.
