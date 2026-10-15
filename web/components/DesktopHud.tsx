@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import type { CitySlug } from "@/lib/cities";
 import { AgentFeed } from "@/components/AgentFeed";
 import { EscapePanel } from "@/components/EscapePanel";
 import { MePanel } from "@/components/MePanel";
@@ -38,14 +39,18 @@ type Props = {
   onLocate: () => void;
   onFlood: () => void;
   onRetry: () => void;
-  onDemo: () => void;
+  onCity: (slug: CitySlug) => void;
   onGo: (place: SavedPlace) => void;
   place: string;
   mapping: boolean;
+  chooser: number;
 };
 
 export function DesktopHud(props: Props) {
   const [tab, setTab] = useState<TabId>("escape");
+  useEffect(() => {
+    if (props.chooser > 0) setTab("escape");
+  }, [props.chooser]);
   return (
     <aside className="hud" aria-label="Floodline">
       <header className="brand">
@@ -82,7 +87,7 @@ export function DesktopHud(props: Props) {
             onLocate={props.onLocate}
             onFlood={props.onFlood}
             onRetry={props.onRetry}
-            onDemo={props.onDemo}
+            onCity={props.onCity}
             place={props.place}
             mapping={props.mapping}
           />

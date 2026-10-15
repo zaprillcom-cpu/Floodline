@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -356,13 +357,20 @@ def fetch_drive_graph(refresh: bool = False):
     return prepared, "overpass"
 
 
-# Public Overpass endpoints. The second is only used when the first times out
-# or errors. Neither write touches the committed Valencia extract.
+# Public Overpass endpoints, tried in this order. A failure moves to the next
+# mirror. The whole sequence stays inside AREA_OVERPASS_BUDGET_S so the map's
+# 45s stall still fires if every mirror hangs. Nothing here writes an extract.
+USER_AGENT = "Floodline/1.0 (https://github.com/zaprillcom-cpu/Floodline)"
 OVERPASS_MIRRORS = (
     "https://overpass-api.de/api",
     "https://overpass.kumi.systems/api",
+    "https://overpass.private.coffee/api",
+    "https://maps.mail.ru/osm/tools/overpass/api",
 )
 AREA_OVERPASS_TIMEOUT_S = 20
+AREA_OVERPASS_BUDGET_S = 40
+# Short pauses between failures. They grow once, and the last mirror is not paused.
+_MIRROR_BACKOFF_S = (0.3, 0.6, 0.9)
 
 # Provisional shelters until Sahil's model lands: amenity=school|community_centre|social_facility
 # and leisure=sports_centre. See shelter_overpass_query.
@@ -444,6 +452,33 @@ def shelter_overpass_query(bbox: tuple[float, float, float, float], timeout_s: i
     )
 
 
+def mirror_attempt_plan(
+    urls: tuple[str, ...] = OVERPASS_MIRRORS,
+    timeout_s: float = AREA_OVERPASS_TIMEOUT_S,
+    budget_s: float = AREA_OVERPASS_BUDGET_S,
+) -> list[tuple[str, float, float]]:
+    """Share ``budget_s`` across mirrors.
+
+    Each item is ``(url, slot_seconds, pause_after_failure)``. Slots are equal
+    and never longer than ``timeout_s``. The pauses are the backoff after a
+    failed attempt; the last mirror has none. Worst case is the budget plus
+    those short pauses, which stays under the UI's 45s stall.
+    """
+    mirrors = tuple(urls)
+    if not mirrors or budget_s <= 0 or timeout_s <= 0:
+        return []
+    slot = min(float(timeout_s), float(budget_s) / len(mirrors))
+    if slot <= 0:
+        return []
+    plan = []
+    for index, url in enumerate(mirrors):
+        pause = 0.0
+        if index + 1 < len(mirrors):
+            pause = _MIRROR_BACKOFF_S[min(index, len(_MIRROR_BACKOFF_S) - 1)]
+        plan.append((url, slot, pause))
+    return plan
+
+
 def _post_overpass(url: str, query: str, timeout_s: float) -> dict:
     import requests
 
@@ -452,7 +487,7 @@ def _post_overpass(url: str, query: str, timeout_s: float) -> dict:
         endpoint,
         data={"data": query},
         timeout=timeout_s,
-        headers={"User-Agent": "Floodline area load"},
+        headers={"User-Agent": USER_AGENT},
     )
     response.raise_for_status()
     payload = response.json()
@@ -500,29 +535,35 @@ def _download_drive(bbox: tuple[float, float, float, float], url: str, timeout_s
 def fetch_area_drive_graph(
     bbox: tuple[float, float, float, float],
     *,
-    timeout_s: int = AREA_OVERPASS_TIMEOUT_S,
+    timeout_s: float = AREA_OVERPASS_TIMEOUT_S,
+    budget_s: float = AREA_OVERPASS_BUDGET_S,
     urls: tuple[str, ...] = OVERPASS_MIRRORS,
     download=None,
 ) -> tuple[dict, str]:
-    """Download a drive network for an arbitrary bbox. Does not write the Valencia extract.
+    """Download a drive network for an arbitrary bbox. Does not write a bundled extract.
 
-    The first mirror gets ``timeout_s``. One failure retries the alternate mirror
-    once. ``download(bbox, url, timeout_s)`` exists so tests can fail the first mirror.
+    Mirrors are tried in order inside ``budget_s``. A failure backs off, then
+    the next mirror is used. ``download(bbox, url, timeout_s)`` exists so tests
+    can fail a mirror without calling Overpass.
     """
     fetch = download or _download_drive
     box = {"west": bbox[0], "south": bbox[1], "east": bbox[2], "north": bbox[3]}
     errors: list[str] = []
-    attempts = tuple(urls)[:2]
-    for url in attempts:
+    plan = mirror_attempt_plan(urls, timeout_s, budget_s)
+    for index, (url, slot, pause) in enumerate(plan):
         try:
-            graph = call_with_deadline(lambda url=url: fetch(bbox, url, timeout_s), timeout_s)
+            graph = call_with_deadline(lambda url=url, slot=slot: fetch(bbox, url, slot), slot)
             prepared = prepare_drive_graph(graph, bbox=box, district_name="here")
         except Exception as exc:
             errors.append(f"{url}: {exc}")
+            if index + 1 < len(plan) and pause > 0:
+                time.sleep(pause)
             continue
         prepared["overpass_url"] = url
         if not prepared["edges"]:
             errors.append(f"{url}: no driveable streets")
+            if index + 1 < len(plan) and pause > 0:
+                time.sleep(pause)
             continue
         return prepared, url
     detail = "; ".join(errors) if errors else "no mirror responded"
@@ -642,21 +683,25 @@ def fetch_shelter_candidates(
     lat: float,
     lon: float,
     *,
-    timeout_s: int = AREA_OVERPASS_TIMEOUT_S,
+    timeout_s: float = AREA_OVERPASS_TIMEOUT_S,
+    budget_s: float = AREA_OVERPASS_BUDGET_S,
     urls: tuple[str, ...] = OVERPASS_MIRRORS,
     download=None,
     limit: int = SHELTER_CAP,
 ) -> list[dict]:
     """Schools, community centres, social facilities, and sports centres near the citizen.
 
-    Each mirror is hard-capped. If every attempt fails, the street graph still
-    loads and this returns an empty list.
+    Mirrors share the same budget as the street download. If every attempt
+    fails, the street graph still loads and this returns an empty list.
     """
     fetch = download or _download_features
-    for url in tuple(urls)[:2]:
+    plan = mirror_attempt_plan(urls, timeout_s, budget_s)
+    for index, (url, slot, pause) in enumerate(plan):
         try:
-            payload = call_with_deadline(lambda url=url: fetch(bbox, url, timeout_s), timeout_s)
+            payload = call_with_deadline(lambda url=url, slot=slot: fetch(bbox, url, slot), slot)
         except Exception:
+            if index + 1 < len(plan) and pause > 0:
+                time.sleep(pause)
             continue
         if isinstance(payload, dict) and "elements" in payload:
             records = shelters_from_overpass(payload)

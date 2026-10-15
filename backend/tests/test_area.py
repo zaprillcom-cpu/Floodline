@@ -1,5 +1,6 @@
 """Citizen area loads. No FalkorDB and no live Overpass."""
 
+import json
 import threading
 import time
 
@@ -9,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from floodline.api import app
 from floodline.area import (
+    CITIES,
     OverpassFailed,
     RateLimited,
     load_citizen_area,
@@ -16,7 +18,13 @@ from floodline.area import (
     reset_rate_limit,
     tile_graph_id,
 )
-from floodline.osm_network import fetch_area_drive_graph, highway_overpass_query, nearest_shelters
+from floodline.osm_network import (
+    USER_AGENT,
+    _post_overpass,
+    fetch_area_drive_graph,
+    highway_overpass_query,
+    nearest_shelters,
+)
 from floodline.stubs import ensure_shelter_citizen_model, route_to_shelter
 
 
@@ -78,7 +86,7 @@ def test_area_fetch_retries_the_mirror_and_does_not_write_the_extract(monkeypatc
     prepared, url = fetch_area_drive_graph((-0.02, 39.44, 0.02, 39.46), download=download)
     assert len(calls) == 2
     assert calls[0][0] == "https://overpass-api.de/api"
-    assert calls[0][1] == 20
+    assert calls[0][1] == 10
     assert "kumi.systems" in url
     assert prepared["bbox"] == {"west": -0.02, "south": 39.44, "east": 0.02, "north": 39.46}
     assert prepared["district_method"] == "area"
@@ -135,7 +143,7 @@ def test_uncached_loads_are_rate_limited(monkeypatch):
         assert load_citizen_area(39.45, -0.40, client="citizen")["cached"] is False
     with pytest.raises(RateLimited) as exc:
         load_citizen_area(39.45, -0.40, client="citizen")
-    assert "Valencia demo" in str(exc.value)
+    assert "bundled city" in str(exc.value)
     assert seen["origin"] == "overpass"
     assert seen["candidates"][0]["name"] == "School"
 
@@ -150,7 +158,7 @@ def test_overpass_failure_names_the_valencia_demo(monkeypatch):
     monkeypatch.setattr("floodline.area.fetch_area_drive_graph", boom)
     with pytest.raises(OverpassFailed) as exc:
         load_citizen_area(10, 10, client="citizen")
-    assert "Valencia demo" in str(exc.value)
+    assert "bundled city" in str(exc.value)
 
 
 def test_highway_query_is_one_bounded_overpass_request():
@@ -301,14 +309,14 @@ def test_api_rate_limit_and_overpass_status(monkeypatch):
     assert blocked.status_code == 200
     failed_limit = _wait_job(client, blocked.json()["job_id"])
     assert failed_limit["status"] == "failed"
-    assert "Valencia demo" in failed_limit["message"]
+    assert "bundled city" in failed_limit["message"]
 
     reset_rate_limit()
     state["fail"] = True
     queued = client.post("/api/area/load", json={"lat": 12, "lon": 12})
     failed = _wait_job(client, queued.json()["job_id"])
     assert failed["status"] == "failed"
-    assert "Valencia demo" in failed["message"]
+    assert "bundled city" in failed["message"]
 
 
 def test_valencia_demo_uses_the_bundled_extract(monkeypatch):
@@ -376,6 +384,10 @@ def test_routing_endpoints_take_a_graph_id(monkeypatch):
     assert seen["route"] == "fl-p3945-n00040"
     assert client.get("/api/route?lat=1&lon=2&graph=valencia").status_code == 200
     assert seen["route"] == "valencia"
+    assert client.get("/api/route?lat=19.076&lon=72.877&graph=mumbai").status_code == 200
+    assert seen["route"] == "mumbai"
+    assert client.get("/api/route?lat=40.7074&lon=-74.0113&graph=nyc").status_code == 200
+    assert seen["route"] == "nyc"
     assert client.get("/api/route?lat=1&lon=2&graph=not-a-graph").status_code == 400
     assert client.get("/api/escape/overlay?graph=valencia").status_code == 200
     assert seen["overlay"] == "valencia"
@@ -425,6 +437,172 @@ def test_osm_candidates_go_through_the_shelter_stub_not_a_near_model():
     assert any("ACCESS" in query for query in writes)
     assert "candidates" in (route_to_shelter.__doc__ or "")
     assert "TODO(Sahil)" in (route_to_shelter.__doc__ or "")
+
+
+def test_overpass_tries_every_mirror_and_sends_a_user_agent(monkeypatch):
+    calls = []
+
+    def download(bbox, url, timeout_s):
+        calls.append((url, timeout_s))
+        raise TimeoutError("down")
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError):
+        fetch_area_drive_graph((-0.02, 39.44, 0.02, 39.46), download=download)
+    assert [url for url, _slot in calls] == [
+        "https://overpass-api.de/api",
+        "https://overpass.kumi.systems/api",
+        "https://overpass.private.coffee/api",
+        "https://maps.mail.ru/osm/tools/overpass/api",
+    ]
+    assert calls[0][1] == 10
+    assert time.monotonic() - started < 4
+
+    import requests
+
+    seen = {}
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"elements": []}
+
+    def post(url, data=None, timeout=None, headers=None):
+        seen["url"] = url
+        seen["headers"] = headers
+        return _Response()
+
+    monkeypatch.setattr(requests, "post", post)
+    _post_overpass("https://overpass.private.coffee/api", "[out:json];out;", 5)
+    assert seen["headers"]["User-Agent"] == USER_AGENT
+    assert seen["url"] == "https://overpass.private.coffee/api/interpreter"
+
+
+def test_bundled_city_extracts_follow_the_valencia_shape():
+    for slug in ("mumbai", "nyc"):
+        spec = CITIES[slug]
+        path = spec["path"]
+        assert path.is_file()
+        assert path.stat().st_size < 8_000_000
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["source"] == "osm"
+        assert data["license"] == "ODbL-1.0"
+        assert "OpenStreetMap" in data["attribution"]
+        assert data["network_type"] == "drive"
+        assert data["tool"] == "osmium+osmnx"
+        assert "geofabrik" in data["geofabrik"]
+        center = data["center"]
+        bbox = data["bbox"]
+        assert bbox["west"] < center["lon"] < bbox["east"]
+        assert bbox["south"] < center["lat"] < bbox["north"]
+        assert center["lat"] == pytest.approx(spec["lat"])
+        assert center["lon"] == pytest.approx(spec["lon"])
+        assert data["shelters"] and data["hospitals"] and data["nodes"] and data["edges"]
+        edge = data["edges"][0]
+        for field in ("road_id", "travel_s", "capacity", "src", "dst", "osm_way"):
+            assert field in edge
+        assert {node["district"] for node in data["nodes"]} == {spec["place"] if slug == "nyc" else "Mumbai"}
+
+
+def test_city_endpoint_loads_the_bundled_extract(monkeypatch):
+    monkeypatch.setattr("floodline.area.area_is_cached", lambda settings: False)
+    seen = {}
+
+    def install(settings, prepared, spec):
+        seen["graph"] = settings.graph
+        seen["shelters"] = prepared.get("shelters") or []
+        seen["hospitals"] = prepared.get("hospitals") or []
+        seen["callsign"] = spec["callsign"]
+        return {
+            "ok": True,
+            "graph": settings.graph,
+            "cached": False,
+            "origin": "extract",
+            "place": spec["place"],
+            "center": {"lat": spec["lat"], "lon": spec["lon"]},
+            "intersections": len(prepared["nodes"]),
+            "shelters": len(seen["shelters"]),
+        }
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("bundled city must not call Overpass")
+
+    monkeypatch.setattr("floodline.area.install_city_graph", install)
+    monkeypatch.setattr("floodline.area.fetch_area_drive_graph", boom)
+    client = TestClient(app)
+    response = client.post("/api/area/city/mumbai")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["graph"] == "mumbai"
+    assert body["origin"] == "extract"
+    assert body["cached"] is False
+    assert body["center"]["lat"] == pytest.approx(19.076)
+    assert body["center"]["lon"] == pytest.approx(72.877)
+    assert seen["shelters"] and seen["hospitals"]
+    assert seen["callsign"] == "M-1"
+    assert client.post("/api/area/city/lisbon").status_code == 404
+
+
+def test_warm_city_graph_is_not_reloaded(monkeypatch):
+    monkeypatch.setattr("floodline.area.area_is_cached", lambda settings: True)
+    monkeypatch.setattr(
+        "floodline.area.read_cached_area",
+        lambda settings: {"ok": True, "graph": settings.graph, "cached": True, "origin": "extract"},
+    )
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("warm city graph must not be reloaded")
+
+    monkeypatch.setattr("floodline.area.install_city_graph", boom)
+    monkeypatch.setattr("floodline.area.read_extract", boom)
+    body = TestClient(app).post("/api/area/city/nyc").json()
+    assert body["cached"] is True
+    assert body["graph"] == "nyc"
+    assert body["place"] == "New York"
+    assert body["center"]["lon"] == pytest.approx(-74.0113)
+
+
+def test_valencia_city_slug_uses_the_existing_demo(monkeypatch):
+    monkeypatch.setattr("floodline.area.area_is_cached", lambda settings: False)
+
+    def fake(settings, refresh=False):
+        assert refresh is False
+        assert settings.graph == "valencia"
+        return {
+            "origin": "extract",
+            "loaded": {"intersections": 2526, "road_edges": 4742, "passable": 4742},
+            "counts_by_kind": {"shelter": 2},
+        }
+
+    monkeypatch.setattr("floodline.area.load_osm_graph", fake)
+    body = TestClient(app).post("/api/area/city/valencia").json()
+    assert body["graph"] == "valencia"
+    assert body["place"] == "Valencia"
+    assert body["center"]["lat"] == pytest.approx(39.4294)
+    assert body["shelters"] == 2
+
+
+def test_report_and_sse_accept_every_bundled_city(monkeypatch):
+    seen = {}
+
+    def fake_report(text, settings=None):
+        seen["report"] = settings.graph
+        return {"closed_roads": []}
+
+    monkeypatch.setattr("floodline.api.file_report", fake_report)
+    monkeypatch.setattr("floodline.api.note_reroute", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr("floodline.api.get_graph", lambda settings=None: object())
+    monkeypatch.setattr("floodline.api.collect_events", lambda graph, since: [])
+    client = TestClient(app)
+    for graph in ("valencia", "mumbai", "nyc"):
+        response = client.post("/api/scenario/report", json={"text": "Water over the road ahead.", "graph": graph})
+        assert response.status_code == 200, response.text
+        assert seen["report"] == graph
+        stream = client.get("/api/stream", params={"once": "true", "graph": graph})
+        assert stream.status_code == 200
+        assert "heartbeat" in stream.text
     from pathlib import Path
 
     provisional = Path(__file__).resolve().parents[1].joinpath("floodline", "provisional.py").read_text(encoding="utf-8")

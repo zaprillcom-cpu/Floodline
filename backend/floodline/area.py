@@ -18,15 +18,51 @@ from floodline.db import get_graph, rows
 from floodline.network import haversine_m
 from floodline.osm_demo import load_osm_graph
 from floodline.osm_network import (
+    BACKEND_ROOT,
+    EXTRACT_PATH,
+    FacilitySpec,
+    apply_facility_labels,
     bbox_dict,
     fetch_area_drive_graph,
     fetch_shelter_candidates,
     parse_bbox,
+    read_extract,
+    snap_facility,
 )
 
 TILE_DEG = 0.05
 VALENCIA_GRAPH = "valencia"
 GRAPH_ID_RE = re.compile(r"^fl-[pn]\d{4}-[pn]\d{5}$")
+
+# Bundled extracts. Valencia keeps its existing file. Mumbai and New York were
+# cropped from Geofabrik when public Overpass was down. Graph ids match slugs.
+CITIES: dict[str, dict] = {
+    "valencia": {
+        "graph": "valencia",
+        "place": "Valencia",
+        "lat": 39.4294,
+        "lon": -0.4183,
+        "path": EXTRACT_PATH,
+        "callsign": "A-7",
+    },
+    "mumbai": {
+        "graph": "mumbai",
+        "place": "Mumbai",
+        "lat": 19.076,
+        "lon": 72.877,
+        "path": BACKEND_ROOT / "data" / "osm" / "mumbai.json",
+        "callsign": "M-1",
+    },
+    "nyc": {
+        "graph": "nyc",
+        "place": "New York",
+        "lat": 40.7074,
+        "lon": -74.0113,
+        "path": BACKEND_ROOT / "data" / "osm" / "nyc.json",
+        "callsign": "NY-1",
+    },
+}
+CITY_GRAPHS = frozenset(spec["graph"] for spec in CITIES.values())
 DEFAULT_RADIUS_M = 2000
 MAX_RADIUS_M = 5000
 MIN_RADIUS_M = 50
@@ -35,11 +71,11 @@ RATE_WINDOW_S = 60.0
 
 OVERPASS_MESSAGE = (
     "Overpass could not download streets for this area. "
-    "Open the Valencia demo, which uses the bundled extract."
+    "Choose a bundled city, which uses an offline extract."
 )
 RATE_MESSAGE = (
     "Too many street downloads from this address. "
-    "Wait a minute, or open the Valencia demo."
+    "Wait a minute, or choose a bundled city."
 )
 
 
@@ -105,9 +141,20 @@ def tile_graph_id(lat: float, lon: float) -> str:
 
 
 def allowed_graph_id(name: str, *, default: str) -> bool:
-    if name == default or name == VALENCIA_GRAPH:
+    if name == default or name in CITY_GRAPHS:
         return True
     return bool(GRAPH_ID_RE.fullmatch(name))
+
+
+class UnknownCity(KeyError):
+    pass
+
+
+def city_spec(slug: str) -> dict:
+    spec = CITIES.get(slug)
+    if spec is None:
+        raise UnknownCity(slug)
+    return spec
 
 
 def radius_bbox(lat: float, lon: float, radius_m: float) -> tuple[float, float, float, float]:
@@ -308,6 +355,112 @@ def get_area_job(job_id: str) -> dict | None:
     with _jobs_lock:
         job = _jobs.get(job_id)
         return dict(job) if job is not None else None
+
+
+def install_city_graph(settings: Settings, prepared: dict, spec: dict) -> dict:
+    """Load one bundled extract, with a unit, OSM hospitals, and OSM shelters.
+
+    Hospitals and the unit use the existing ACCESS facility pattern. Shelter
+    candidates go through ``ensure_shelter_citizen_model``, which stays Sahil's
+    stub and attaches ACCESS only as a fallback. No Overpass call.
+    """
+    from floodline.bulk import attach_facilities, load_records
+    from floodline.db import connect
+    from floodline.stubs import ensure_shelter_citizen_model
+
+    hospitals = list(prepared.get("hospitals") or [])
+    if not hospitals:
+        hospitals = [
+            {
+                "id": f"{spec['graph']}-hospital",
+                "name": f"{spec['place']} hospital",
+                "lat": spec["lat"],
+                "lon": spec["lon"],
+            }
+        ]
+    facilities = []
+    for index, item in enumerate(hospitals[:4]):
+        facilities.append(
+            FacilitySpec(
+                "hospital",
+                str(item.get("id") or f"hospital-{index}")[:80],
+                str(item.get("name") or "Hospital")[:120],
+                float(item["lat"]),
+                float(item["lon"]),
+                beds_total=40,
+                beds_free=12,
+            )
+        )
+    facilities.append(
+        FacilitySpec(
+            "unit",
+            f"{spec['graph']}-unit",
+            spec["callsign"],
+            float(spec["lat"]),
+            float(spec["lon"]),
+            callsign=spec["callsign"],
+        )
+    )
+    snaps = [snap_facility(prepared["nodes"], item) for item in facilities]
+    apply_facility_labels(prepared, snaps)
+    db = connect(settings, socket_timeout=180)
+    graph = db.select_graph(settings.graph)
+    try:
+        graph.delete()
+    except Exception:
+        pass
+    graph = db.select_graph(settings.graph)
+    loaded = load_records(graph, prepared)
+    attach_facilities(graph, snaps)
+    candidates = snap_shelters(prepared["nodes"], list(prepared.get("shelters") or []))
+    model = ensure_shelter_citizen_model(graph, candidates)
+    for name, role in (("Scout", "closures"), ("Dispatcher", "routing")):
+        graph.query(
+            "CREATE (:Agent {name: $name, role: $role, heartbeat_at: $at})",
+            {"name": name, "role": role, "at": T_CLOSE},
+        )
+    provisional = model.get("provisional") or {}
+    center = prepared.get("center") or {"lat": spec["lat"], "lon": spec["lon"]}
+    return {
+        "ok": True,
+        "graph": settings.graph,
+        "cached": False,
+        "origin": "extract",
+        "place": spec["place"],
+        "center": {"lat": float(center["lat"]), "lon": float(center["lon"])},
+        "intersections": loaded["intersections"],
+        "road_edges": loaded["road_edges"],
+        "passable": loaded["passable"],
+        "shelters": int(provisional.get("attached") or 0),
+        "bbox": prepared.get("bbox") or bbox_dict(),
+        "cch": loaded.get("cch"),
+        "shelter_model": model.get("stub"),
+    }
+
+
+def _with_place(payload: dict, spec: dict, prepared: dict | None = None) -> dict:
+    center = (prepared or {}).get("center") or {"lat": spec["lat"], "lon": spec["lon"]}
+    payload["place"] = spec["place"]
+    payload["center"] = {"lat": float(center["lat"]), "lon": float(center["lon"])}
+    return payload
+
+
+def load_bundled_city(slug: str, settings: Settings | None = None) -> dict:
+    """Load a bundled city the way Valencia does: cache if warm, else the file.
+
+    No Overpass and no admin token. A graph that already has intersections is
+    left in place.
+    """
+    spec = city_spec(slug)
+    base = settings or Settings.from_env()
+    if slug == "valencia":
+        return _with_place(load_valencia_demo(base), spec)
+    cfg = base.for_graph(spec["graph"])
+    if area_is_cached(cfg):
+        payload = read_cached_area(cfg)
+        payload["origin"] = "cache"
+        return _with_place(payload, spec)
+    return install_city_graph(cfg, read_extract(spec["path"]), spec)
 
 
 def load_valencia_demo(settings: Settings | None = None) -> dict:

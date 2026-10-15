@@ -21,9 +21,9 @@ Cursor Grok 4.7 implemented every task tagged **AI-assist**. Sahil's tasks are s
 - Full-screen MapLibre map, OpenFreeMap dark style, `fill-extrusion` buildings (`web/components/FloodMap.tsx`).
 - Design tokens in `web/lib/theme.ts`.
 - Simulated GPS, turn banner, live agent cards, desktop HUD, mobile tabs and bottom sheet, flood-vision tint, Me tab in `localStorage`.
-- `POST /api/area/load` returns a job immediately. A background worker downloads an Overpass drive network (20 s per mirror, one retry, no OSMnx status pause), stores it in a FalkorDB graph named for a 0.05° tile, builds the CCH index, and passes up to 8 OSM shelter candidates into the existing shelter stubs. Default radius is 2000 m, capped at 5000 m. The map polls `GET /api/area/status` and gives up if `queued` or `fetching` does not change for 45 s. No `ADMIN_TOKEN`.
-- `POST /api/area/valencia` loads the bundled extract into the `valencia` graph so the demo does not wait on Overpass. Route, overlay, zones, feed, report, and SSE take that graph id.
-- The map's **Use my location** action is the default when geolocation permission is already granted. The loading state reads "Mapping streets around you…". If Overpass fails, the screen offers the Valencia demo.
+- `POST /api/area/load` returns a job immediately. A background worker downloads an Overpass drive network (four mirrors sharing a 40 s budget, `User-Agent: Floodline/1.0` plus the repo URL, no OSMnx status pause), stores it in a FalkorDB graph named for a 0.05° tile, builds the CCH index, and passes up to 8 OSM shelter candidates into the existing shelter stubs. Default radius is 2000 m, capped at 5000 m. The map polls `GET /api/area/status` and gives up if `queued` or `fetching` does not change for 45 s. No `ADMIN_TOKEN`.
+- `POST /api/area/city/{slug}` loads a bundled extract for Valencia, Mumbai, or New York. Mumbai and New York were cropped with osmium from Geofabrik PBF extracts because public Overpass was down, then prepared with the same pipeline as `valencia_corridor.json`. `POST /api/area/valencia` still loads the Valencia graph. Route, overlay, zones, feed, report, and SSE take that graph id.
+- The map's **Use my location** action is the default when geolocation permission is already granted. The loading state reads "Mapping streets around you…". The desktop HUD and the mobile Escape tab also offer the bundled cities. If a live download fails, that picker is shown immediately.
 
 ### Left for Sahil
 

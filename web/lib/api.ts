@@ -29,6 +29,8 @@ export type AreaLoad = {
   passable?: number;
   shelters?: number;
   bbox?: { west: number; south: number; east: number; north: number };
+  place?: string;
+  center?: { lat: number; lon: number };
 };
 
 function withGraph(path: string, graph?: string | null): string {
@@ -101,11 +103,11 @@ export async function loadArea(
     if (current.status === "failed") {
       throw new Error(
         current.message ||
-          "Overpass could not download streets for this area. Open the Valencia demo, which uses the bundled extract.",
+          "Overpass could not download streets for this area. Choose a bundled city, which uses an offline extract.",
       );
     }
     if (Date.now() - changedAt >= AREA_STALL_MS) {
-      throw new Error("Street mapping stalled. Open the Valencia demo, which uses the bundled extract.");
+      throw new Error("Street mapping stalled. Choose a bundled city, which uses an offline extract.");
     }
     await sleep(AREA_POLL_MS);
     if (shouldStop?.()) break;
@@ -120,8 +122,12 @@ export async function loadArea(
   throw new Error("cancelled");
 }
 
+export function loadCity(slug: string): Promise<AreaLoad> {
+  return send<AreaLoad>(`/api/area/city/${encodeURIComponent(slug)}`, { method: "POST" });
+}
+
 export function loadValenciaDemo(): Promise<AreaLoad> {
-  return send<AreaLoad>("/api/area/valencia", { method: "POST" });
+  return loadCity("valencia");
 }
 
 export function resetNetwork(): Promise<Snapshot> {

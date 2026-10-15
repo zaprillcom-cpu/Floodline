@@ -7,6 +7,7 @@ import { EscapePanel } from "@/components/EscapePanel";
 import { IconEscape, IconLive, IconMe, IconReport } from "@/components/Icons";
 import { MePanel } from "@/components/MePanel";
 import { ReportPanel } from "@/components/ReportPanel";
+import type { CitySlug } from "@/lib/cities";
 import type { FeedEvent, Overlay, RoutePlan, TabId } from "@/lib/types";
 import type { SavedPlace } from "@/lib/storage";
 
@@ -42,7 +43,8 @@ type Props = {
   onLocate: () => void;
   onFlood: () => void;
   onRetry: () => void;
-  onDemo: () => void;
+  onCity: (slug: CitySlug) => void;
+  chooser?: number;
   onGo: (place: SavedPlace) => void;
   place: string;
   mapping: boolean;
@@ -75,7 +77,7 @@ export function MobileShell(props: Props) {
             onLocate={props.onLocate}
             onFlood={props.onFlood}
             onRetry={props.onRetry}
-            onDemo={props.onDemo}
+            onCity={props.onCity}
             place={props.place}
             mapping={props.mapping}
           />

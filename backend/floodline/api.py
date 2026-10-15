@@ -13,11 +13,13 @@ from pydantic import BaseModel, Field
 from floodline.admin_auth import require_admin
 from floodline.analysis import cut_off_areas, evac_capacity, prove_cutoff, record_corridor
 from floodline.area import (
+    CITIES,
     DEFAULT_RADIUS_M,
     MAX_RADIUS_M,
     MIN_RADIUS_M,
     allowed_graph_id,
     get_area_job,
+    load_bundled_city,
     load_valencia_demo,
     start_area_job,
 )
@@ -208,6 +210,17 @@ def area_valencia() -> dict:
     is left in place.
     """
     return _guard(load_valencia_demo)
+
+
+@app.post("/api/area/city/{slug}")
+def area_city(slug: str) -> dict:
+    """Load a bundled city (valencia, mumbai, nyc). Same cache rules as Valencia.
+
+    Does not call Overpass and does not require ``ADMIN_TOKEN``.
+    """
+    if slug not in CITIES:
+        raise HTTPException(status_code=404, detail="Unknown city")
+    return _guard(lambda: load_bundled_city(slug))
 
 
 @app.get("/api/route")

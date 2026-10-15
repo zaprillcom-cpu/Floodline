@@ -1,3 +1,4 @@
+import { BUNDLED_CITIES, type CitySlug } from "@/lib/cities";
 import { formatDistance } from "@/lib/geo";
 import { formatEta, type Overlay, type RoutePlan } from "@/lib/types";
 
@@ -18,7 +19,7 @@ type Props = {
   onLocate: () => void;
   onFlood: () => void;
   onRetry: () => void;
-  onDemo: () => void;
+  onCity: (slug: CitySlug) => void;
   place?: string;
   mapping?: boolean;
 };
@@ -38,7 +39,7 @@ export function EscapePanel({
   onLocate,
   onFlood,
   onRetry,
-  onDemo,
+  onCity,
   place = "Nearby",
   mapping = false,
 }: Props) {
@@ -56,7 +57,7 @@ export function EscapePanel({
         {dest
           ? `to ${dest.name}`
           : loaded
-            ? `Nearest open shelter on the ${place === "Valencia" ? "Valencia" : "loaded"} street graph.`
+            ? `Nearest open shelter on the ${place} street graph.`
             : "The street graph is not loaded yet."}
       </p>
       {dest && (
@@ -130,17 +131,28 @@ export function EscapePanel({
           <strong>{overlay?.counts?.passable ?? "—"}</strong>
         </div>
       </div>
-      {(!route || error) && !mapping && (
-        <div className="row">
-          {error && (
-            <button type="button" className="btn ghost" onClick={onRetry} disabled={busy}>
-              Retry
-            </button>
-          )}
-          <button type="button" className="btn ghost" onClick={onDemo} disabled={busy}>
-            Valencia demo
-          </button>
+      {!mapping && (
+        <div className="city-picker" aria-label="Bundled cities">
+          <p className="kicker">Bundled cities</p>
+          <div className="city-row">
+            {BUNDLED_CITIES.map((city) => (
+              <button
+                key={city.slug}
+                type="button"
+                className="btn ghost"
+                onClick={() => onCity(city.slug)}
+                disabled={busy}
+              >
+                {city.label}
+              </button>
+            ))}
+          </div>
         </div>
+      )}
+      {error && !mapping && (
+        <button type="button" className="btn ghost" onClick={onRetry} disabled={busy}>
+          Retry
+        </button>
       )}
     </div>
   );
