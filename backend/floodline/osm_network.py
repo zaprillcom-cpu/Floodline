@@ -10,6 +10,7 @@ official boundary. Populations, beds, shelters, and the ambulance are synthetic.
 from __future__ import annotations
 
 import json
+import threading
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -361,13 +362,10 @@ OVERPASS_MIRRORS = (
     "https://overpass-api.de/api",
     "https://overpass.kumi.systems/api",
 )
-AREA_OVERPASS_TIMEOUT_S = 40
+AREA_OVERPASS_TIMEOUT_S = 20
 
-# OSM tags treated as provisional shelters until Sahil's model lands.
-SHELTER_TAGS = {
-    "amenity": ["school", "community_centre", "social_facility"],
-    "leisure": ["sports_centre"],
-}
+# Provisional shelters until Sahil's model lands: amenity=school|community_centre|social_facility
+# and leisure=sports_centre. See shelter_overpass_query.
 SHELTER_CAP = 8
 
 
@@ -387,19 +385,116 @@ def parse_bbox(value) -> dict | None:
         return None
 
 
-def _download_drive(bbox: tuple[float, float, float, float], url: str, timeout_s: int):
-    import osmnx as ox
+def call_with_deadline(fn, timeout_s: float):
+    """Run ``fn`` on a daemon thread and stop waiting after ``timeout_s``.
 
-    ox.settings.use_cache = True
-    ox.settings.cache_folder = str(CACHE_DIR)
-    ox.settings.requests_timeout = timeout_s
-    ox.settings.overpass_url = url
-    graph = ox.graph_from_bbox(bbox, network_type="drive", simplify=True, retain_all=False)
+    OSMnx's Overpass client can sleep on the status endpoint with no overall
+    deadline. This bound is the one the area loader actually honors.
+    """
+    if timeout_s <= 0:
+        raise TimeoutError("Overpass exceeded 0s")
+    box: dict = {}
+
+    def run() -> None:
+        try:
+            box["value"] = fn()
+        except Exception as exc:
+            box["error"] = exc
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(timeout_s)
+    if worker.is_alive():
+        raise TimeoutError(f"Overpass exceeded {timeout_s}s")
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
+def highway_overpass_query(bbox: tuple[float, float, float, float], timeout_s: int) -> str:
+    """One ways-and-nodes query for streets inside the bbox.
+
+    ``highway=*`` keeps the request small. Paths that are not streets are left
+    out so a dense city does not pull every footway into FalkorDB.
+    """
+    west, south, east, north = bbox
+    skip = (
+        "abandoned|bus_stop|construction|corridor|cycleway|elevator|escalator|"
+        "footway|path|pedestrian|planned|platform|proposed|raceway|steps|track"
+    )
+    return (
+        f"[out:json][timeout:{int(timeout_s)}];"
+        f'(way["highway"]["highway"!~"{skip}"]["area"!~"yes"]({south},{west},{north},{east});>;);'
+        "out body;"
+    )
+
+
+def shelter_overpass_query(bbox: tuple[float, float, float, float], timeout_s: int) -> str:
+    west, south, east, north = bbox
+    box = f"({south},{west},{north},{east})"
+    return (
+        f"[out:json][timeout:{int(timeout_s)}];"
+        "("
+        f'node["amenity"~"school|community_centre|social_facility"]{box};'
+        f'node["leisure"="sports_centre"]{box};'
+        f'way["amenity"~"school|community_centre|social_facility"]{box};'
+        f'way["leisure"="sports_centre"]{box};'
+        ");"
+        "out center;"
+    )
+
+
+def _post_overpass(url: str, query: str, timeout_s: float) -> dict:
+    import requests
+
+    endpoint = url.rstrip("/") + "/interpreter"
+    response = requests.post(
+        endpoint,
+        data={"data": query},
+        timeout=timeout_s,
+        headers={"User-Agent": "Floodline area load"},
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise RuntimeError("Overpass returned an unexpected body")
+    if payload.get("remark") and not payload.get("elements"):
+        raise RuntimeError(str(payload["remark"])[:240])
+    return payload
+
+
+def _graph_from_overpass(payload: dict):
+    import networkx as nx
+    import osmnx as ox
+    from osmnx.graph import _create_graph
+    from osmnx.simplification import simplify_graph
+    from osmnx.truncate import largest_component
+
+    elements = payload.get("elements") or []
+    if not elements:
+        return nx.MultiDiGraph()
+    graph = _create_graph([payload], bidirectional=False)
+    if graph.number_of_edges() == 0:
+        return graph
+    try:
+        graph = simplify_graph(graph)
+    except Exception:
+        pass
+    try:
+        graph = largest_component(graph, strongly=False)
+    except Exception:
+        pass
     graph = ox.add_edge_speeds(graph, fallback=FALLBACK_SPEED_KPH)
     graph = ox.add_edge_travel_times(graph)
     for _src, _dst, _key, data in graph.edges(keys=True, data=True):
         data.pop("geometry", None)
     return graph
+
+
+def _download_drive(bbox: tuple[float, float, float, float], url: str, timeout_s: int):
+    """Direct Overpass POST. Does not use OSMnx's status-endpoint pause."""
+    payload = _post_overpass(url, highway_overpass_query(bbox, timeout_s), timeout_s)
+    return _graph_from_overpass(payload)
 
 
 def fetch_area_drive_graph(
@@ -411,14 +506,16 @@ def fetch_area_drive_graph(
 ) -> tuple[dict, str]:
     """Download a drive network for an arbitrary bbox. Does not write the Valencia extract.
 
-    ``download(bbox, url, timeout_s)`` exists so tests can fail the first mirror.
+    The first mirror gets ``timeout_s``. One failure retries the alternate mirror
+    once. ``download(bbox, url, timeout_s)`` exists so tests can fail the first mirror.
     """
     fetch = download or _download_drive
     box = {"west": bbox[0], "south": bbox[1], "east": bbox[2], "north": bbox[3]}
     errors: list[str] = []
-    for url in urls:
+    attempts = tuple(urls)[:2]
+    for url in attempts:
         try:
-            graph = fetch(bbox, url, timeout_s)
+            graph = call_with_deadline(lambda url=url: fetch(bbox, url, timeout_s), timeout_s)
             prepared = prepare_drive_graph(graph, bbox=box, district_name="here")
         except Exception as exc:
             errors.append(f"{url}: {exc}")
@@ -509,14 +606,35 @@ def nearest_shelters(records: list[dict], lat: float, lon: float, limit: int = S
     return chosen
 
 
-def _download_features(bbox: tuple[float, float, float, float], url: str, timeout_s: int):
-    import osmnx as ox
+def shelters_from_overpass(payload: dict) -> list[dict]:
+    records = []
+    for element in payload.get("elements") or []:
+        if "lat" in element and "lon" in element:
+            slat, slon = element["lat"], element["lon"]
+        elif isinstance(element.get("center"), dict):
+            slat = element["center"].get("lat")
+            slon = element["center"].get("lon")
+        else:
+            continue
+        if slat is None or slon is None:
+            continue
+        tags = element.get("tags") or {}
+        kind = _label(tags.get("amenity")) or _label(tags.get("leisure")) or "shelter"
+        name = _label(tags.get("name")) or kind.replace("_", " ").title()
+        records.append(
+            {
+                "id": f"osm-{element.get('type', 'n')}-{element.get('id', len(records))}",
+                "name": name[:120],
+                "kind": str(kind)[:40],
+                "lat": float(slat),
+                "lon": float(slon),
+            }
+        )
+    return records
 
-    ox.settings.use_cache = True
-    ox.settings.cache_folder = str(CACHE_DIR)
-    ox.settings.requests_timeout = timeout_s
-    ox.settings.overpass_url = url
-    return ox.features_from_bbox(bbox, SHELTER_TAGS)
+
+def _download_features(bbox: tuple[float, float, float, float], url: str, timeout_s: int):
+    return _post_overpass(url, shelter_overpass_query(bbox, timeout_s), timeout_s)
 
 
 def fetch_shelter_candidates(
@@ -531,15 +649,18 @@ def fetch_shelter_candidates(
 ) -> list[dict]:
     """Schools, community centres, social facilities, and sports centres near the citizen.
 
-    A mirror failure tries the next one. If every mirror fails, the street graph
-    still loads and this returns an empty list.
+    Each mirror is hard-capped. If every attempt fails, the street graph still
+    loads and this returns an empty list.
     """
     fetch = download or _download_features
-    for url in urls:
+    for url in tuple(urls)[:2]:
         try:
-            frame = fetch(bbox, url, timeout_s)
-            records = records_from_features(frame)
+            payload = call_with_deadline(lambda url=url: fetch(bbox, url, timeout_s), timeout_s)
         except Exception:
             continue
+        if isinstance(payload, dict) and "elements" in payload:
+            records = shelters_from_overpass(payload)
+        else:
+            records = records_from_features(payload)
         return nearest_shelters(records, lat, lon, limit)
     return []

@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import math
 import re
+import threading
 import time
+import uuid
 from collections import deque
 
 from floodline.config import Settings, T_CLOSE
@@ -25,7 +27,7 @@ from floodline.osm_network import (
 TILE_DEG = 0.05
 VALENCIA_GRAPH = "valencia"
 GRAPH_ID_RE = re.compile(r"^fl-[pn]\d{4}-[pn]\d{5}$")
-DEFAULT_RADIUS_M = 3000
+DEFAULT_RADIUS_M = 2000
 MAX_RADIUS_M = 5000
 MIN_RADIUS_M = 50
 RATE_LIMIT = 4
@@ -50,22 +52,35 @@ class RateLimited(RuntimeError):
 
 
 _hits: dict[str, deque[float]] = {}
+_rate_lock = threading.Lock()
+_jobs_lock = threading.Lock()
+_jobs: dict[str, dict] = {}
+_job_order: list[str] = []
+_JOB_LIMIT = 80
 
 
 def reset_rate_limit() -> None:
-    _hits.clear()
+    with _rate_lock:
+        _hits.clear()
+
+
+def reset_area_jobs() -> None:
+    with _jobs_lock:
+        _jobs.clear()
+        _job_order.clear()
 
 
 def enforce_rate_limit(client: str, *, now: float | None = None) -> None:
     """Four uncached Overpass loads per minute per client. Cache hits do not call this."""
     clock = time.monotonic() if now is None else now
     key = client or "unknown"
-    window = _hits.setdefault(key, deque())
-    while window and clock - window[0] >= RATE_WINDOW_S:
-        window.popleft()
-    if len(window) >= RATE_LIMIT:
-        raise RateLimited(RATE_MESSAGE)
-    window.append(clock)
+    with _rate_lock:
+        window = _hits.setdefault(key, deque())
+        while window and clock - window[0] >= RATE_WINDOW_S:
+            window.popleft()
+        if len(window) >= RATE_LIMIT:
+            raise RateLimited(RATE_MESSAGE)
+        window.append(clock)
 
 
 def snap_tile(value: float, step: float = TILE_DEG) -> float:
@@ -205,6 +220,11 @@ def persist_area(settings: Settings, prepared: dict, candidates: list[dict], *, 
     }
 
 
+def _report(on_status, status: str, message: str) -> None:
+    if on_status is not None:
+        on_status(status, message)
+
+
 def load_citizen_area(
     lat: float,
     lon: float,
@@ -212,6 +232,7 @@ def load_citizen_area(
     *,
     client: str = "unknown",
     settings: Settings | None = None,
+    on_status=None,
 ) -> dict:
     """Fetch, or reuse, the drive graph for this tile. Rate-limits uncached fetches."""
     if radius_m > MAX_RADIUS_M or radius_m < MIN_RADIUS_M:
@@ -219,18 +240,74 @@ def load_citizen_area(
     base = settings or Settings.from_env()
     cfg = base.for_graph(tile_graph_id(lat, lon))
     if area_is_cached(cfg):
+        _report(on_status, "indexing", "Using streets already loaded for this area.")
         return read_cached_area(cfg)
     enforce_rate_limit(client)
+    _report(on_status, "fetching", "Downloading streets from OpenStreetMap.")
     bbox = radius_bbox(lat, lon, radius_m)
     try:
-        prepared, _mirror = fetch_area_drive_graph(bbox)
+        prepared, mirror = fetch_area_drive_graph(bbox)
     except Exception as exc:
         raise OverpassFailed(OVERPASS_MESSAGE) from exc
+    _report(on_status, "indexing", "Building the CCH index.")
     try:
-        candidates = fetch_shelter_candidates(bbox, lat, lon)
+        candidates = fetch_shelter_candidates(bbox, lat, lon, urls=(mirror,))
     except Exception:
         candidates = []
     return persist_area(cfg, prepared, candidates, origin="overpass")
+
+
+def _update_job(job_id: str, **fields) -> None:
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job is not None:
+            job.update(fields)
+
+
+def _run_area_job(job_id: str, lat: float, lon: float, radius_m: int, client: str) -> None:
+    def on_status(status: str, message: str) -> None:
+        _update_job(job_id, status=status, message=message)
+
+    try:
+        result = load_citizen_area(lat, lon, radius_m, client=client, on_status=on_status)
+    except RateLimited as exc:
+        _update_job(job_id, status="failed", message=str(exc))
+        return
+    except OverpassFailed as exc:
+        _update_job(job_id, status="failed", message=str(exc))
+        return
+    except Exception:
+        _update_job(
+            job_id,
+            status="failed",
+            message=OVERPASS_MESSAGE,
+        )
+        return
+    _update_job(job_id, status="ready", message="Streets are ready.", **result)
+
+
+def start_area_job(lat: float, lon: float, radius_m: int, *, client: str) -> dict:
+    """Queue an area load and return immediately. The worker updates the job."""
+    job_id = uuid.uuid4().hex
+    job = {"job_id": job_id, "status": "queued", "message": "Queued."}
+    with _jobs_lock:
+        _jobs[job_id] = job
+        _job_order.append(job_id)
+        while len(_job_order) > _JOB_LIMIT:
+            _jobs.pop(_job_order.pop(0), None)
+        snapshot = dict(job)
+    threading.Thread(
+        target=_run_area_job,
+        args=(job_id, lat, lon, radius_m, client),
+        daemon=True,
+    ).start()
+    return snapshot
+
+
+def get_area_job(job_id: str) -> dict | None:
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        return dict(job) if job is not None else None
 
 
 def load_valencia_demo(settings: Settings | None = None) -> dict:

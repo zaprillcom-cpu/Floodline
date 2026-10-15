@@ -16,11 +16,10 @@ from floodline.area import (
     DEFAULT_RADIUS_M,
     MAX_RADIUS_M,
     MIN_RADIUS_M,
-    OverpassFailed,
-    RateLimited,
     allowed_graph_id,
-    load_citizen_area,
+    get_area_job,
     load_valencia_demo,
+    start_area_job,
 )
 from floodline.config import Settings
 from floodline.db import get_graph
@@ -178,29 +177,27 @@ def load_valencia(
 
 @app.post("/api/area/load")
 def area_load(body: AreaIn, request: Request) -> dict:
-    """Drive network around a citizen. No admin token. Radius is capped.
+    """Queue a drive-network load. Returns immediately. No admin token.
 
-    A repeated load of the same rounded tile is served from FalkorDB.
+    Poll ``GET /api/area/status``. A repeated load of the same rounded tile
+    is served from FalkorDB by the worker. Overpass work does not run in this
+    request.
     """
+    return start_area_job(
+        body.lat,
+        body.lon,
+        body.radius_m,
+        client=_client_key(request),
+    )
 
-    def run():
-        return load_citizen_area(
-            body.lat,
-            body.lon,
-            body.radius_m,
-            client=_client_key(request),
-        )
 
-    try:
-        return run()
-    except RateLimited as exc:
-        raise HTTPException(status_code=429, detail=str(exc)) from exc
-    except OverpassFailed as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    except TimeoutError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+@app.get("/api/area/status")
+def area_status(job_id: str = Query(..., min_length=8, max_length=64)) -> dict:
+    """queued, fetching, indexing, ready, or failed, plus a short message."""
+    job = get_area_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown area job")
+    return job
 
 
 @app.post("/api/area/valencia")
