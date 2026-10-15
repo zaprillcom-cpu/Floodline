@@ -136,6 +136,25 @@ export function loadValenciaDemo(): Promise<AreaLoad> {
   return loadCity("valencia");
 }
 
+export function reopenRoad(body: {
+  road_id?: string;
+  graph?: string | null;
+  lat?: number;
+  lon?: number;
+  clear_test?: boolean;
+}): Promise<{ ok?: boolean; reopened?: string[]; decision_id?: string | null; message?: string }> {
+  return send("/api/road/reopen", {
+    method: "POST",
+    body: JSON.stringify({
+      road_id: body.road_id,
+      graph: body.graph || undefined,
+      lat: body.lat,
+      lon: body.lon,
+      clear_test: Boolean(body.clear_test),
+    }),
+  });
+}
+
 export function resetNetwork(): Promise<Snapshot> {
   return send<Snapshot>("/api/scenario/reset", { method: "POST" });
 }

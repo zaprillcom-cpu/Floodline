@@ -70,7 +70,9 @@ export function BottomSheet({ snap, onSnap, children }: Props) {
       <button
         type="button"
         className="handle-hit"
+        data-testid="sheet-handle"
         aria-label="Drag the sheet"
+        style={{ touchAction: "none" }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={finish}

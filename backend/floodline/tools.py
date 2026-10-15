@@ -352,6 +352,50 @@ def write_close_decision(
     return decision_id
 
 
+def write_reopen_decision(
+    graph,
+    *,
+    road_id: str,
+    road_name: str,
+    at: str,
+    explanation: str,
+) -> str:
+    """Citizen marked a closed road clear. The Decision is what the SSE feed reads."""
+    decision_id = _id("dec")
+    seq = next_seq(graph)
+    graph.query(
+        """
+        CREATE (:Decision {
+          id: $id,
+          seq: $seq,
+          at: $at,
+          kind: 'reopen',
+          algo: 'property-update',
+          explanation: $explanation,
+          result_summary: $summary,
+          superseded: false,
+          road_id: $road_id
+        })
+        """,
+        {
+            "id": decision_id,
+            "seq": seq,
+            "at": at,
+            "explanation": explanation,
+            "summary": f"Reopened {road_name}",
+            "road_id": road_id,
+        },
+    )
+    graph.query(
+        """
+        MATCH (a:Agent {name: 'Scout'}), (d:Decision {id: $id})
+        CREATE (a)-[:MADE]->(d)
+        """,
+        {"id": decision_id},
+    )
+    return decision_id
+
+
 def create_report(graph, text: str, at: str, confidence: float = 0.9) -> str:
     report_id = _id("report")
     graph.query(

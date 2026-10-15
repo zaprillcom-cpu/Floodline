@@ -42,9 +42,11 @@ type Props = {
   onCity: (slug: CitySlug) => void;
   onDestination: (id: string) => void;
   onGo: (place: SavedPlace) => void;
+  onClearClosures: () => void;
   place: string;
   mapping: boolean;
   chooser: number;
+  reportFocus: number;
 };
 
 export function DesktopHud(props: Props) {
@@ -52,6 +54,9 @@ export function DesktopHud(props: Props) {
   useEffect(() => {
     if (props.chooser > 0) setTab("escape");
   }, [props.chooser]);
+  useEffect(() => {
+    if (props.reportFocus > 0) setTab("report");
+  }, [props.reportFocus]);
   return (
     <aside className="hud" aria-label="Floodline">
       <header className="brand">
@@ -99,13 +104,22 @@ export function DesktopHud(props: Props) {
             text={props.report}
             busy={props.busy}
             loaded={Boolean(props.overlay?.loaded)}
+            pose={props.pose}
+            placeName={props.place}
             onChange={props.onReport}
             onSubmit={props.onSubmit}
             onAhead={props.onAhead}
           />
         )}
         {tab === "live" && <AgentFeed events={props.events} />}
-        {tab === "me" && <MePanel pose={props.pose} onGo={props.onGo} />}
+        {tab === "me" && (
+          <MePanel
+            pose={props.pose}
+            onGo={props.onGo}
+            onClearClosures={props.onClearClosures}
+            clearBusy={props.busy}
+          />
+        )}
       </div>
     </aside>
   );

@@ -18,7 +18,22 @@ class ToolCall:
 
 
 _BRIDGE = ("v-31", "v31", "paiporta bridge", "puente de paiporta")
-_CLOSURE_WORDS = ("closed", "flood", "water", "impassable", "under water", "not passable")
+_CLOSURE_WORDS = (
+    "closed",
+    "flood",
+    "water",
+    "waterlogging",
+    "impassable",
+    "under water",
+    "not passable",
+    "earthquake",
+    "landslide",
+    "fallen tree",
+    "fire",
+    "collapse",
+    "power line",
+    "blocked",
+)
 
 
 def plan(text: str) -> ToolCall:

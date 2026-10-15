@@ -6,9 +6,11 @@ import { loadMe, saveMe, type FamilyMember, type SavedPlace } from "@/lib/storag
 type Props = {
   pose: { lat: number; lon: number };
   onGo: (place: SavedPlace) => void;
+  onClearClosures: () => void;
+  clearBusy?: boolean;
 };
 
-export function MePanel({ pose, onGo }: Props) {
+export function MePanel({ pose, onGo, onClearClosures, clearBusy = false }: Props) {
   const [places, setPlaces] = useState<SavedPlace[]>([]);
   const [family, setFamily] = useState<FamilyMember[]>([]);
   const [placeName, setPlaceName] = useState("");
@@ -52,6 +54,9 @@ export function MePanel({ pose, onGo }: Props) {
       <p className="kicker">Me</p>
       <h2 className="display tight">Your people</h2>
       <p className="lede">Places and check-ins stay on this phone. Nothing here is sent to the graph.</p>
+      <button type="button" className="btn ghost" onClick={onClearClosures} disabled={clearBusy}>
+        Clear my test closures
+      </button>
       <label className="field" htmlFor="place-name">
         Saved places
         <input
