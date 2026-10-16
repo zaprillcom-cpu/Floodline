@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { DesktopHud } from "@/components/DesktopHud";
 import { MobileShell } from "@/components/MobileShell";
-import { fetchFeed, fetchOverlay, fetchRoute, fetchZones, fileReport, loadArea, reopenRoad, type AreaJob } from "@/lib/api";
+import { fetchNetworkGraph, fetchFeed, fetchOverlay, fetchRoute, fetchZones, fileReport, loadArea, reopenRoad, type AreaJob } from "@/lib/api";
 import { MapPrompt } from "@/components/MapPrompt";
 import { DISASTERS } from "@/lib/disasters";
 import { bundledCity, cityContains, type CitySlug } from "@/lib/cities";
@@ -19,6 +19,8 @@ import {
 } from "@/lib/geo";
 import type { SavedPlace } from "@/lib/storage";
 import type { ClosedRoad, FeedEvent, Overlay, RoutePlan, TabId } from "@/lib/types";
+
+import type { GraphNet } from "@/components/FloodMap";
 
 const FloodMap = dynamic(() => import("@/components/FloodMap").then((mod) => mod.FloodMap), { ssr: false });
 
@@ -55,6 +57,8 @@ export function EscapeApp() {
   const [promptPlace, setPromptPlace] = useState<{ lat: number; lon: number; name: string; pinId?: string } | null>(null);
   const [promptClosure, setPromptClosure] = useState<ClosedRoad | null>(null);
   const [promptArea, setPromptArea] = useState<{ lat: number; lon: number; name: string } | null>(null);
+  const [showGraph, setShowGraph] = useState(false);
+  const [graphNet, setGraphNet] = useState<GraphNet | null>(null);
   const progressRef = useRef(0);
   const poseRef = useRef(pose);
   const seen = useRef(new Set<string>());
@@ -540,6 +544,21 @@ export function EscapeApp() {
     );
   }
 
+  const topSeq = events.reduce((max, event) => Math.max(max, event.seq || 0), 0);
+  useEffect(() => {
+    if (!showGraph || !overlay?.loaded) {
+      setGraphNet(null);
+      return;
+    }
+    let live = true;
+    fetchNetworkGraph(graphId)
+      .then((net) => live && setGraphNet(net))
+      .catch((exc: unknown) => live && setError(exc instanceof Error ? exc.message : "Road graph unavailable"));
+    return () => {
+      live = false;
+    };
+  }, [showGraph, graphId, topSeq, overlay?.loaded, overlay?.closed?.length]);
+
   const shared = {
     route,
     progress,
@@ -577,6 +596,9 @@ export function EscapeApp() {
     onClearClosures: () => void clearClosures(),
     place,
     mapping: phase === "mapping" || phase === "boot",
+    graphId,
+    showGraph,
+    onShowGraph: () => setShowGraph((value) => !value),
   };
 
   return (
@@ -615,6 +637,7 @@ export function EscapeApp() {
           setPromptArea(null);
           setPromptClosure(road);
         }}
+        graphNet={graphNet}
         onArea={() => {
           setPromptPlace(null);
           setPromptClosure(null);
@@ -683,6 +706,19 @@ export function EscapeApp() {
         </div>
       )}
       {flood && <div className="vision-chip">Flood vision</div>}
+      {(phase === "ready" || phase === "choose") && !navigating && (
+        <button type="button" className={`map-graph-btn${showGraph ? " on" : ""}`} onClick={() => setShowGraph((value) => !value)}>
+          {showGraph ? "Hide graph" : "Show graph"}
+        </button>
+      )}
+      {showGraph && graphNet?.stats && (
+        <div className="graph-map-chip" aria-live="polite">
+          <span><i style={{ background: "#64D2FF" }} />{String(graphNet.stats.intersections)} nodes · {String(graphNet.stats.edges)} roads</span>
+          <span><i style={{ background: "#30D158" }} />route</span>
+          <span><i style={{ background: "#FF453A" }} />closed {String(graphNet.stats.closed_edges)}</span>
+          <span><i style={{ background: "#BF5AF2" }} />cut off {String(graphNet.stats.cut_off_nodes)}</span>
+        </div>
+      )}
       {banner && (
         <div className="banner" aria-live="polite">
           <strong>{banner.instruction}</strong>

@@ -26,6 +26,7 @@ from floodline.area import (
 from floodline.config import Settings
 from floodline.db import get_graph
 from floodline.escape import cutoff_zones, note_reroute, overlay_payload, route_payload
+from floodline.graphview import memory_graph, network_geojson
 from floodline.events import collect_events, format_sse
 from floodline.network import DEMO_REPORT
 from floodline.osm_demo import load_osm_graph
@@ -273,6 +274,26 @@ def escape_zones(graph: str | None = Query(default=None)) -> dict:
     """Flood-vision shades. WCC-to-shelter is the Sahil stub."""
     cfg = _settings_for(graph)
     return _guard(lambda: cutoff_zones(get_graph(cfg)))
+
+
+@app.get("/api/graph/memory")
+def graph_memory(
+    graph: str | None = Query(default=None),
+    limit: int = Query(default=60, ge=1, le=200),
+) -> dict:
+    """Agent-memory chain: Report, Decision, Task, Agent, Unit, ... and their edges."""
+    cfg = _settings_for(graph)
+    return _guard(lambda: memory_graph(get_graph(cfg), limit=limit))
+
+
+@app.get("/api/graph/network")
+def graph_network(
+    graph: str | None = Query(default=None),
+    max_edges: int = Query(default=30000, ge=100, le=60000),
+) -> dict:
+    """Loaded road network as GeoJSON, with WCC component, closures, and route hops."""
+    cfg = _settings_for(graph)
+    return _guard(lambda: network_geojson(get_graph(cfg), max_edges=max_edges))
 
 
 @app.get("/api/feed")

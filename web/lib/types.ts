@@ -113,7 +113,7 @@ export type ZonePayload = {
   zones: Array<{ name: string; population?: number; polygon: [number, number][] }>;
 };
 
-export type TabId = "escape" | "report" | "live" | "me";
+export type TabId = "escape" | "report" | "live" | "graph" | "me";
 
 export type RouteView = {
   decision_id: string;

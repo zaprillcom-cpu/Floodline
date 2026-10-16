@@ -158,3 +158,22 @@ export function reopenRoad(body: {
 export function resetNetwork(): Promise<Snapshot> {
   return send<Snapshot>("/api/scenario/reset", { method: "POST" });
 }
+
+export type MemoryNode = {
+  id: string;
+  label: string;
+  title: string;
+  seq: number;
+  props: Record<string, unknown>;
+  cypher: string;
+};
+export type MemoryEdge = { source: string; target: string; type: string; derived: boolean };
+export type MemoryGraph = { nodes: MemoryNode[]; edges: MemoryEdge[]; counts: Record<string, number>; cursor: number };
+
+export function fetchMemoryGraph(graph?: string | null): Promise<MemoryGraph> {
+  return send<MemoryGraph>(withGraph("/api/graph/memory", graph));
+}
+
+export function fetchNetworkGraph(graph?: string | null) {
+  return send<import("@/components/FloodMap").GraphNet>(withGraph("/api/graph/network", graph));
+}

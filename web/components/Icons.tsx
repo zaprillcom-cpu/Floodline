@@ -60,3 +60,14 @@ export function IconMe({ active }: IconProps) {
     </svg>
   );
 }
+
+export function IconGraph({ active }: IconProps) {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M7 7 17 9M7 7l3 10M17 9l-7 8" stroke="currentColor" strokeWidth="1.4" fill="none" />
+      {[[7, 7], [17, 9], [10, 17]].map(([x, y]) => (
+        <circle key={`${x}-${y}`} cx={x} cy={y} r="2.6" fill={active ? "currentColor" : "#000"} stroke="currentColor" strokeWidth="1.6" />
+      ))}
+    </svg>
+  );
+}

@@ -36,6 +36,7 @@ type Props = {
   onPlace?: (place: { lat: number; lon: number; name: string; pinId?: string }) => void;
   onClosed?: (roadId: string) => void;
   onArea?: () => void;
+  graphNet?: GraphNet | null;
 };
 
 type FeatureCollection = {
@@ -144,6 +145,73 @@ function ensure(map: maplibregl.Map) {
   }
 }
 
+export type GraphNet = {
+  type: "FeatureCollection";
+  features: Array<{ type: "Feature"; geometry: unknown; properties: Record<string, unknown> }>;
+  stats?: Record<string, number | boolean>;
+};
+
+const GRAPH_LAYERS = ["graph-edges", "graph-route", "graph-closed", "graph-nodes"];
+
+function paintGraph(map: maplibregl.Map, net: GraphNet | null | undefined) {
+  if (!map.getSource("graphnet")) {
+    map.addSource("graphnet", { type: "geojson", data: emptyCollection() });
+    const before = map.getLayer("route-casing") ? "route-casing" : undefined;
+    map.addLayer(
+      {
+        id: "graph-edges",
+        type: "line",
+        source: "graphnet",
+        filter: ["==", ["get", "kind"], "edge"],
+        paint: {
+          "line-color": ["case", ["get", "cut_off"], theme.color.purple, "rgba(100, 210, 255, 0.55)"],
+          "line-width": ["interpolate", ["linear"], ["zoom"], 13, 0.6, 17, 1.6],
+        },
+      },
+      before,
+    );
+    map.addLayer(
+      {
+        id: "graph-route",
+        type: "line",
+        source: "graphnet",
+        filter: ["all", ["==", ["get", "kind"], "edge"], ["==", ["get", "on_route"], true]],
+        paint: { "line-color": theme.color.green, "line-width": 3.2 },
+      },
+      before,
+    );
+    map.addLayer(
+      {
+        id: "graph-closed",
+        type: "line",
+        source: "graphnet",
+        filter: ["all", ["==", ["get", "kind"], "edge"], ["==", ["get", "status"], "closed"]],
+        paint: { "line-color": theme.color.closed, "line-width": 3.4 },
+      },
+      before,
+    );
+    map.addLayer(
+      {
+        id: "graph-nodes",
+        type: "circle",
+        source: "graphnet",
+        filter: ["==", ["get", "kind"], "node"],
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 13, 1.2, 17, 3.4],
+          "circle-color": ["case", ["get", "cut_off"], theme.color.purple, theme.color.cyan],
+          "circle-opacity": 0.9,
+          "circle-stroke-width": 0,
+        },
+      },
+      before,
+    );
+  }
+  setData(map, "graphnet", (net as FeatureCollection | null) ?? emptyCollection());
+  for (const id of GRAPH_LAYERS) {
+    if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", net ? "visible" : "none");
+  }
+}
+
 function setData(map: maplibregl.Map, id: string, data: FeatureCollection) {
   const source = map.getSource(id) as maplibregl.GeoJSONSource | undefined;
   source?.setData(data);
@@ -189,6 +257,7 @@ export function FloodMap({
   onPlace,
   onClosed,
   onArea,
+  graphNet = null,
 }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -350,10 +419,14 @@ export function FloodMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const graphRef = useRef<GraphNet | null>(graphNet);
+  graphRef.current = graphNet;
+
   paintRef.current = function paint(map: maplibregl.Map) {
     const current = propsRef.current;
     addBuildings(map, current.flood);
     ensure(map);
+    paintGraph(map, graphRef.current);
     const coords = current.routeCoords;
     setData(
       map,
@@ -439,6 +512,13 @@ export function FloodMap({
     if (!map || !map.isStyleLoaded()) return;
     paintRef.current(map);
   }, [routeKey, closed, zones, pins, activePinId, flood, paddingRight, mobile, navigating, destPoint]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (map.isStyleLoaded()) paintGraph(map, graphNet);
+    else map.once("idle", () => paintGraph(map, graphRef.current));
+  }, [graphNet]);
 
   useEffect(() => {
     const map = mapRef.current;

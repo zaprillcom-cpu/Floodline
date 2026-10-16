@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { CitySlug } from "@/lib/cities";
 import { AgentFeed } from "@/components/AgentFeed";
+import { GraphPanel } from "@/components/GraphPanel";
 import { EscapePanel } from "@/components/EscapePanel";
 import { MePanel } from "@/components/MePanel";
 import { ReportPanel } from "@/components/ReportPanel";
@@ -13,6 +14,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "escape", label: "Escape" },
   { id: "report", label: "Report" },
   { id: "live", label: "Live" },
+  { id: "graph", label: "Graph" },
   { id: "me", label: "Me" },
 ];
 
@@ -47,6 +49,9 @@ type Props = {
   mapping: boolean;
   chooser: number;
   reportFocus: number;
+  graphId: string | null;
+  showGraph: boolean;
+  onShowGraph: () => void;
 };
 
 export function DesktopHud(props: Props) {
@@ -112,6 +117,9 @@ export function DesktopHud(props: Props) {
           />
         )}
         {tab === "live" && <AgentFeed events={props.events} />}
+        {tab === "graph" && (
+          <GraphPanel graphId={props.graphId} events={props.events} showMap={props.showGraph} onShowMap={props.onShowGraph} height={380} />
+        )}
         {tab === "me" && (
           <MePanel
             pose={props.pose}
