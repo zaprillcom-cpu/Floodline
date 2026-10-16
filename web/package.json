@@ -8,12 +8,14 @@
     "start": "next start -p 3000"
   },
   "dependencies": {
+    "d3-force": "^3.0.0",
     "maplibre-gl": "^6.14.0",
     "next": "^15.5.4",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },
   "devDependencies": {
+    "@types/d3-force": "^3.0.10",
     "@types/node": "^22.15.0",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",

@@ -3,8 +3,9 @@
 import { useState } from "react";
 import { AgentFeed } from "@/components/AgentFeed";
 import { BottomSheet } from "@/components/BottomSheet";
+import { GraphPanel } from "@/components/GraphPanel";
 import { EscapePanel } from "@/components/EscapePanel";
-import { IconEscape, IconLive, IconMe, IconReport } from "@/components/Icons";
+import { IconEscape, IconGraph, IconLive, IconMe, IconReport } from "@/components/Icons";
 import { MePanel } from "@/components/MePanel";
 import { ReportPanel } from "@/components/ReportPanel";
 import type { CitySlug } from "@/lib/cities";
@@ -15,6 +16,7 @@ const TABS: { id: TabId; label: string; Icon: typeof IconEscape }[] = [
   { id: "escape", label: "Escape", Icon: IconEscape },
   { id: "report", label: "Report", Icon: IconReport },
   { id: "live", label: "Live", Icon: IconLive },
+  { id: "graph", label: "Graph", Icon: IconGraph },
   { id: "me", label: "Me", Icon: IconMe },
 ];
 
@@ -50,6 +52,9 @@ type Props = {
   onClearClosures: () => void;
   place: string;
   mapping: boolean;
+  graphId: string | null;
+  showGraph: boolean;
+  onShowGraph: () => void;
 };
 
 export function MobileShell(props: Props) {
@@ -98,6 +103,9 @@ export function MobileShell(props: Props) {
           />
         )}
         {props.tab === "live" && <AgentFeed events={props.events} />}
+        {props.tab === "graph" && (
+          <GraphPanel graphId={props.graphId} events={props.events} showMap={props.showGraph} onShowMap={props.onShowGraph} height={300} />
+        )}
         {props.tab === "me" && (
           <MePanel
             pose={props.pose}
