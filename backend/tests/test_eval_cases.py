@@ -1,7 +1,7 @@
 """Regressions from the live agent-quality eval. Most of these do not need FalkorDB."""
 
 from floodline.agents.dispatcher import _complete
-from floodline.agents.llm_planner import _SYSTEM, plan_with_llm
+from floodline.agents.llm_planner import _SYSTEM, _messages, plan_with_llm
 from floodline.agents.planner import ToolCall
 from floodline.agents.scout import handle_report
 from floodline.routing import Route
@@ -357,6 +357,246 @@ def test_dispatcher_does_not_write_a_decision_when_the_path_is_unchanged(monkeyp
     assert result["unchanged"] is True
     assert written == []
     assert finished["result"] == "unchanged"
+
+
+def test_name_match_outranks_distance_and_a_cross_street_is_an_anchor():
+    """Eval v2 cases 12, 14, and C3: the named road wins, and the second street is not closed."""
+    colony = parse_report_place("Aarey Colony Road blocked by a landslide")
+    assert colony["anchor"] == ""
+    ranked = geocode_report(
+        "Aarey Colony Road blocked by a landslide",
+        _Roads(
+            [
+                {
+                    "road_id": "aarey-near",
+                    "name": "Aarey Road",
+                    "alat": 19.1646,
+                    "alon": 72.8493,
+                    "blat": 19.1650,
+                    "blon": 72.8496,
+                },
+                {
+                    "road_id": "colony-far",
+                    "name": "Aarey Colony Road",
+                    "alat": 19.1800,
+                    "alon": 72.8600,
+                    "blat": 19.1810,
+                    "blon": 72.8610,
+                },
+            ]
+        ),
+        lat=19.1646,
+        lon=72.8493,
+    )
+    assert ranked["edges"][0]["road_id"] == "colony-far"
+    assert ranked["edges"][0]["band"] > next(edge["band"] for edge in ranked["edges"] if edge["road_id"] == "aarey-near")
+
+    junction_lat, junction_lon = 19.1600, 72.8450
+    sv = geocode_report(
+        "SV Road near Road No.4 is waist-deep",
+        _Roads(
+            [
+                {
+                    "road_id": "sv-north",
+                    "name": "Swami Vivekanand Road",
+                    "alat": 19.1642,
+                    "alon": 72.8490,
+                    "blat": 19.1660,
+                    "blon": 72.8492,
+                },
+                {
+                    "road_id": "sv-junction",
+                    "name": "Swami Vivekanand Road",
+                    "alat": junction_lat,
+                    "alon": junction_lon,
+                    "blat": 19.1610,
+                    "blon": 72.8460,
+                },
+                {
+                    "road_id": "no4",
+                    "name": "Road No.4",
+                    "alat": junction_lat,
+                    "alon": junction_lon,
+                    "blat": 19.1602,
+                    "blon": 72.8470,
+                },
+            ]
+        ),
+        lat=19.1646,
+        lon=72.8493,
+    )
+    assert sv["anchor"].lower().startswith("road")
+    assert [edge["road_id"] for edge in sv["edges"]] == ["sv-junction"]
+    assert sv["edges"][0]["anchor_m"] == 0
+
+    numbered = geocode_report(
+        "Road No.6 off Station Road is flooded",
+        _Roads(
+            [
+                {
+                    "road_id": "station-near",
+                    "name": "Station Road",
+                    "alat": 19.1649,
+                    "alon": 72.8491,
+                    "blat": 19.1652,
+                    "blon": 72.8494,
+                },
+                {
+                    "road_id": "police",
+                    "name": "Oshiwara Police Station Road",
+                    "alat": 19.1647,
+                    "alon": 72.8490,
+                    "blat": 19.1648,
+                    "blon": 72.8492,
+                },
+                {
+                    "road_id": "no6-far",
+                    "name": "Road No.6",
+                    "alat": 19.1700,
+                    "alon": 72.8600,
+                    "blat": 19.1710,
+                    "blon": 72.8610,
+                },
+                {
+                    "road_id": "no6-junction",
+                    "name": "Road No.6",
+                    "alat": 19.1649,
+                    "alon": 72.8491,
+                    "blat": 19.1655,
+                    "blon": 72.8500,
+                },
+            ]
+        ),
+        lat=19.1646,
+        lon=72.8493,
+    )
+    assert numbered["anchor"] == "Station Road"
+    assert [edge["road_id"] for edge in numbered["edges"]] == ["no6-junction"]
+    assert numbered["edges"][0]["anchor_m"] == 0
+
+
+def test_landmarks_are_context_and_not_road_candidates():
+    messages = _messages(
+        "Fire near Goregaon station",
+        {
+            "roads": [{"road_id": "station-road", "name": "Station Road", "dist_m": 40, "anchor_m": None}],
+            "landmarks": [{"id": "school-1", "name": "A.B. Goregaonkar English School"}],
+            "shelters": [{"id": "school-1", "name": "A.B. Goregaonkar English School"}],
+        },
+    )
+    body = messages[1]["content"]
+    roads, places = body.split("Places for context only", 1)
+    assert "station-road" in roads
+    assert "Goregaonkar" not in roads
+    assert "Goregaonkar" in places
+    assert "not roads" in _SYSTEM
+
+
+def test_cache_hit_indexes_landmarks_without_rebuilding_streets(monkeypatch):
+    from floodline.area import load_citizen_area
+
+    monkeypatch.setattr("floodline.area.area_is_cached", lambda settings: True)
+    monkeypatch.setattr(
+        "floodline.area.read_cached_area",
+        lambda settings: {"ok": True, "cached": True, "graph": settings.graph, "origin": "cache"},
+    )
+    seen = {}
+
+    def fake_index(graph, lat, lon, radius_m, *, refresh=False):
+        seen["lat"] = lat
+        seen["refresh"] = refresh
+        return 3
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("a cache hit must not rebuild streets")
+
+    monkeypatch.setattr("floodline.area.ensure_tile_landmarks", fake_index)
+    monkeypatch.setattr("floodline.area.persist_area", boom)
+    monkeypatch.setattr("floodline.area.fetch_area_drive_graph", boom)
+    payload = load_citizen_area(19.1646, 72.8493, client="eval")
+    assert payload["cached"] is True
+    assert payload["landmarks"] == 3
+    assert seen["refresh"] is False
+    assert seen["lat"] == 19.1646
+
+
+def test_admin_can_refresh_landmarks_without_a_street_rebuild(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from floodline.api import app
+
+    monkeypatch.setenv("ADMIN_TOKEN", "secret")
+    seen = {}
+
+    def fake(settings, lat, lon, radius_m):
+        seen["graph"] = settings.graph
+        seen["lat"] = lat
+        return {"ok": True, "graph": settings.graph, "landmarks": 5, "lat": lat, "lon": lon}
+
+    monkeypatch.setattr("floodline.api.refresh_landmarks", fake)
+    client = TestClient(app)
+    denied = client.post("/api/admin/landmarks/refresh", params={"graph": "fl-p1915-p07285"})
+    assert denied.status_code == 401
+    ok = client.post(
+        "/api/admin/landmarks/refresh",
+        params={"graph": "fl-p1915-p07285", "lat": 19.16, "lon": 72.85},
+        headers={"X-Admin-Token": "secret"},
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["landmarks"] == 5
+    assert seen["graph"] == "fl-p1915-p07285"
+    assert seen["lat"] == 19.16
+
+
+def test_legacy_citizen_is_not_rerouted_and_reset_deletes_it(monkeypatch):
+    from floodline.scenario import reset_agent_memory
+    from floodline.stubs import reroute_affected
+
+    class _Graph:
+        def __init__(self):
+            self.queries = []
+            self.citizens = [
+                ("citizen", 19.16, 72.85, 100, "dec-old"),
+                ("evalcitizen0001", 19.16, 72.85, 100, "dec-real"),
+            ]
+
+        def query(self, text, params=None):
+            self.queries.append(text)
+            if "c.id <> 'citizen'" in text:
+                return _Rows([row for row in self.citizens if row[0] != "citizen"])
+            if "Citizen {id: 'citizen'}" in text and "count" in text:
+                return _Rows([[1]])
+            if "count(n)" in text:
+                return _Rows([[1]])
+            if "status: 'closed'" in text:
+                return _Rows([])
+            return _Rows([])
+
+    graph = _Graph()
+    monkeypatch.setattr("floodline.stubs.route_to_shelter", lambda *a, **k: (_ for _ in ()).throw(AssertionError("legacy citizen must not be rerouted")))
+    # The filter is in Cypher. A graph that still returns the legacy row is skipped in Python too.
+    graph.citizens = [("citizen", 19.16, 72.85, 100, "dec-old")]
+    graph.query = lambda text, params=None: _Rows(graph.citizens) if "ROUTED_TO" in text else _Rows([])
+    result = reroute_affected(graph, "school-road")
+    assert result["citizens"] == []
+
+    memory = _Graph()
+
+    def query(text, params=None):
+        memory.queries.append(text)
+        if "Citizen {id: 'citizen'}" in text:
+            return _Rows([[1]])
+        if "count(n)" in text:
+            return _Rows([[2]])
+        if "status: 'closed'" in text:
+            return _Rows([])
+        return _Rows([])
+
+    memory.query = query
+    monkeypatch.setattr("floodline.scenario.get_graph", lambda cfg: memory)
+    cleared = reset_agent_memory()
+    assert cleared["legacy_citizen"] == 1
+    assert any("DETACH DELETE" in text and "Citizen" in text for text in memory.queries)
 
 
 def test_newest_closure_hides_stale_valencia_text():

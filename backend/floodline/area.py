@@ -198,6 +198,88 @@ def _stored_bbox(graph) -> dict:
     return bbox_dict()
 
 
+def _landmark_count(graph) -> int:
+    try:
+        found = rows(graph.query("MATCH (l:Landmark) RETURN count(l) AS n"))
+    except Exception:
+        return 0
+    if not found:
+        return 0
+    return int(found[0][0] or 0)
+
+
+def ensure_tile_landmarks(graph, lat: float, lon: float, radius_m: int, *, refresh: bool = False) -> int:
+    """Index Landmark nodes on a tile that already has streets.
+
+    A cache hit does not rebuild the road graph. Tiles written before landmarks
+    existed get them here. ``refresh`` deletes the current Landmark nodes first.
+    Offline region places are used when the point sits in a bundled region;
+    Overpass supplies malls and stations. A failure leaves the streets in place.
+    """
+    try:
+        found = rows(graph.query("MATCH (i:Intersection) RETURN count(i) AS n"))
+    except Exception:
+        return 0
+    if not found or int(found[0][0] or 0) == 0:
+        return 0
+    if not refresh and _landmark_count(graph) > 0:
+        return 0
+    try:
+        from floodline.landmarks import fetch_poi_landmarks, index_landmarks, landmark_records
+        from floodline.regions import places_in_radius
+
+        if refresh:
+            graph.query("MATCH (l:Landmark) DETACH DELETE l")
+        nodes = [
+            {"osmid": int(osmid), "lat": float(lat_i), "lon": float(lon_i)}
+            for osmid, lat_i, lon_i in rows(
+                graph.query(
+                    """
+                    MATCH (i:Intersection)
+                    WHERE i.lat IS NOT NULL AND i.lon IS NOT NULL
+                    RETURN i.osmid, i.lat, i.lon
+                    """
+                )
+            )
+        ]
+        west, south, east, north = radius_bbox(lat, lon, radius_m)
+        bbox = {"west": west, "south": south, "east": east, "north": north}
+        records = landmark_records(places_in_radius(lat, lon, radius_m))
+        records.extend(fetch_poi_landmarks(bbox))
+        seen = set()
+        unique = []
+        for item in records:
+            key = str(item.get("name") or "").strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            unique.append(item)
+        return index_landmarks(graph, unique, nodes)
+    except Exception:
+        return 0
+
+
+def refresh_landmarks(settings: Settings, lat: float | None = None, lon: float | None = None, radius_m: int = DEFAULT_RADIUS_M) -> dict:
+    """Reindex landmarks for one graph. Streets stay. Admin token is checked at the HTTP layer."""
+    graph = get_graph(settings)
+    if lat is None or lon is None:
+        center = rows(
+            graph.query(
+                """
+                MATCH (i:Intersection)
+                WHERE i.lat IS NOT NULL AND i.lon IS NOT NULL
+                RETURN avg(i.lat), avg(i.lon)
+                """
+            )
+        )
+        if not center or center[0][0] is None:
+            return {"ok": False, "graph": settings.graph, "landmarks": 0}
+        lat = float(center[0][0])
+        lon = float(center[0][1])
+    written = ensure_tile_landmarks(graph, lat, lon, radius_m, refresh=True)
+    return {"ok": True, "graph": settings.graph, "landmarks": written, "lat": lat, "lon": lon}
+
+
 def read_cached_area(settings: Settings) -> dict:
     graph = get_graph(settings)
     counts = _counts(graph)
@@ -351,8 +433,14 @@ def load_citizen_area(
     region = region_containing(lat, lon)
     if area_is_cached(cfg):
         _report(on_status, "indexing", "Using streets already loaded for this area.")
+        landmarks_written = 0
+        try:
+            landmarks_written = ensure_tile_landmarks(get_graph(cfg), lat, lon, radius_m, refresh=False)
+        except Exception:
+            landmarks_written = 0
         payload = read_cached_area(cfg)
         payload["center"] = {"lat": lat, "lon": lon}
+        payload["landmarks"] = landmarks_written
         if region is not None:
             payload["place"] = region.place
         return payload

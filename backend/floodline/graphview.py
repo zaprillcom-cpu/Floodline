@@ -179,7 +179,7 @@ LIMIT $limit
 
 _CITIZEN_ROUTE_Q = """
 MATCH (c:Citizen)
-WHERE c.path_osmids IS NOT NULL AND c.path_osmids <> ''
+WHERE c.id <> 'citizen' AND c.path_osmids IS NOT NULL AND c.path_osmids <> ''
 RETURN c.path_osmids
 ORDER BY c.updated_at DESC
 LIMIT 1

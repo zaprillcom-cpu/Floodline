@@ -91,7 +91,7 @@ def test_geocode_prefers_the_named_road():
 def test_route_to_shelter_writes_a_citizen_and_uses_falkordb():
     reset_scenario()
     graph = get_graph()
-    result = route_to_shelter(graph, 39.4260, -0.4170)
+    result = route_to_shelter(graph, 39.4260, -0.4170, citizen_id="evalcitizen0001")
     assert result["destination"]["kind"] == "shelter"
     assert result["destination"]["id"] == "alfafar-sports"
     assert result["algo"] in {"cch", "astar", "sppaths"}
@@ -99,7 +99,7 @@ def test_route_to_shelter_writes_a_citizen_and_uses_falkordb():
     citizen = rows(
         graph.query(
             """
-            MATCH (c:Citizen {id: 'citizen'})-[:AT]->(i:Intersection)
+            MATCH (c:Citizen {id: 'evalcitizen0001'})-[:AT]->(i:Intersection)
             RETURN i.osmid, c.eta_s
             """
         )
@@ -108,7 +108,7 @@ def test_route_to_shelter_writes_a_citizen_and_uses_falkordb():
     roads = {
         road_id
         for (road_id,) in rows(
-            graph.query("MATCH (:Citizen {id: 'citizen'})-[r:ROUTED_TO]->() RETURN DISTINCT r.road_id")
+            graph.query("MATCH (:Citizen {id: 'evalcitizen0001'})-[r:ROUTED_TO]->() RETURN DISTINCT r.road_id")
         )
     }
     assert roads
@@ -119,7 +119,16 @@ def test_route_to_shelter_writes_a_citizen_and_uses_falkordb():
 def test_reroute_writes_a_decision_that_supersedes_and_affects_the_citizen():
     reset_scenario()
     graph = get_graph()
-    route_to_shelter(graph, 39.4260, -0.4170)
+    route_to_shelter(graph, 39.4260, -0.4170, citizen_id="evalcitizen0001")
+    graph.query(
+        """
+        MERGE (c:Citizen {id: 'citizen'})
+        SET c.lat = 39.4260, c.lon = -0.4170, c.active = true
+        WITH c
+        MATCH (i:Intersection {osmid: 1005})
+        CREATE (c)-[:ROUTED_TO {seq: 0, road_id: 'cami-poyo'}]->(i)
+        """
+    )
     report_id = create_report(graph, "Camí del Poyo is flooded and not passable", "2026-10-17T08:00:00Z")
     close_road(graph, "cami-poyo", by="Scout", at="2026-10-17T08:00:00Z")
     link_report_closes(graph, report_id, "cami-poyo")
@@ -145,12 +154,13 @@ def test_reroute_writes_a_decision_that_supersedes_and_affects_the_citizen():
     assert int(new_eta) >= int(old_eta)
     assert previous
     assert report == report_id
-    assert citizen == "citizen"
-    assert rerouted == "citizen"
+    assert citizen == "evalcitizen0001"
+    assert rerouted == "evalcitizen0001"
+    assert all(item.get("id") != "citizen" for item in result["citizens"])
     still = rows(
         graph.query(
             """
-            MATCH (:Citizen {id: 'citizen'})-[r:ROUTED_TO {road_id: 'cami-poyo'}]->()
+            MATCH (:Citizen {id: 'evalcitizen0001'})-[r:ROUTED_TO {road_id: 'cami-poyo'}]->()
             RETURN count(r)
             """
         )

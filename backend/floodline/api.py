@@ -22,6 +22,7 @@ from floodline.area import (
     get_area_job,
     load_bundled_city,
     load_valencia_demo,
+    refresh_landmarks,
     start_area_job,
 )
 from floodline.config import Settings
@@ -131,6 +132,25 @@ def memory_reset(
     require_admin(authorization, x_admin_token)
     cfg = _settings_for(graph)
     return _guard(lambda: reset_agent_memory(cfg))
+
+
+@app.post("/api/admin/landmarks/refresh")
+def landmarks_refresh(
+    graph: str | None = Query(default=None),
+    lat: float | None = Query(default=None, ge=-90, le=90),
+    lon: float | None = Query(default=None, ge=-180, le=180),
+    radius_m: int = Query(default=DEFAULT_RADIUS_M, ge=MIN_RADIUS_M, le=MAX_RADIUS_M),
+    authorization: str | None = Header(default=None),
+    x_admin_token: str | None = Header(default=None),
+) -> dict:
+    """Index Landmark nodes on one tile without rebuilding streets.
+
+    Requires the admin token. Use it when a tile was loaded before landmarks
+    existed, or to replace the current set. Omit lat/lon to use the tile center.
+    """
+    require_admin(authorization, x_admin_token)
+    cfg = _settings_for(graph)
+    return _guard(lambda: refresh_landmarks(cfg, lat, lon, radius_m))
 
 
 @app.post("/api/scenario/report")

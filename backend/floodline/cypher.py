@@ -183,7 +183,7 @@ LIMIT $k
 
 CITIZENS_ON_ROAD = """
 MATCH (c:Citizen)-[r:ROUTED_TO]->()
-WHERE r.road_id = $road_id AND coalesce(c.active, true) = true
+WHERE r.road_id = $road_id AND coalesce(c.active, true) = true AND c.id <> 'citizen'
 RETURN DISTINCT c.id AS id, c.lat AS lat, c.lon AS lon, c.eta_s AS eta_s, c.decision_id AS decision_id
 """
 
