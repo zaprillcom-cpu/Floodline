@@ -13,7 +13,7 @@ import time
 import uuid
 from collections import deque
 
-from floodline.config import Settings, T_CLOSE
+from floodline.config import Settings, utc_now
 from floodline.db import get_graph, rows
 from floodline.network import haversine_m
 from floodline.osm_demo import load_osm_graph
@@ -241,7 +241,7 @@ def persist_area(
     hospitals: list[dict] | None = None,
     unit: dict | None = None,
 ) -> dict:
-    """Delete the tile graph, bulk-load it, build CCH, and hand shelters to the stub."""
+    """Delete the tile graph, bulk-load it, build CCH, and write Shelter-NEAR."""
     from floodline.bulk import attach_facilities, load_records
     from floodline.db import connect
     from floodline.stubs import ensure_shelter_citizen_model
@@ -285,12 +285,16 @@ def persist_area(
         attach_facilities(graph, snaps)
     snapped = snap_shelters(prepared["nodes"], candidates)
     model = ensure_shelter_citizen_model(graph, snapped)
-    for name, role in (("Scout", "closures"), ("Dispatcher", "routing")):
+    now = utc_now()
+    for name, role in (("Scout", "closures"), ("Dispatcher", "routing"), ("Analyst", "connectivity")):
         graph.query(
-            "CREATE (:Agent {name: $name, role: $role, heartbeat_at: $at})",
-            {"name": name, "role": role, "at": T_CLOSE},
+            """
+            MERGE (a:Agent {name: $name})
+            SET a.role = $role, a.heartbeat_at = $at
+            """,
+            {"name": name, "role": role, "at": now},
         )
-    provisional = model.get("provisional") or {}
+    analyst = _run_analyst(graph, now)
     return {
         "ok": True,
         "graph": settings.graph,
@@ -299,10 +303,11 @@ def persist_area(
         "intersections": loaded["intersections"],
         "road_edges": loaded["road_edges"],
         "passable": loaded["passable"],
-        "shelters": int(provisional.get("attached") or 0),
+        "shelters": int(model.get("shelters") or model.get("attached") or 0),
         "bbox": prepared.get("bbox") or bbox_dict(),
         "cch": loaded.get("cch"),
-        "shelter_model": model.get("stub"),
+        "shelter_model": "near" if model.get("written") else "unwritten",
+        "analyst": analyst.get("task_id"),
     }
 
 
@@ -430,9 +435,8 @@ def get_area_job(job_id: str) -> dict | None:
 def install_city_graph(settings: Settings, prepared: dict, spec: dict) -> dict:
     """Load one bundled extract, with a unit, OSM hospitals, and OSM shelters.
 
-    Hospitals and the unit use the existing ACCESS facility pattern. Shelter
-    candidates go through ``ensure_shelter_citizen_model``, which stays Sahil's
-    stub and attaches ACCESS only as a fallback. No Overpass call.
+    Hospitals and the unit use ACCESS. Shelter candidates go through
+    ``ensure_shelter_citizen_model``, which writes NEAR and ACCESS. No Overpass call.
     """
     from floodline.bulk import attach_facilities, load_records
     from floodline.db import connect
@@ -484,11 +488,16 @@ def install_city_graph(settings: Settings, prepared: dict, spec: dict) -> dict:
     attach_facilities(graph, snaps)
     candidates = snap_shelters(prepared["nodes"], list(prepared.get("shelters") or []))
     model = ensure_shelter_citizen_model(graph, candidates)
-    for name, role in (("Scout", "closures"), ("Dispatcher", "routing")):
+    now = utc_now()
+    for name, role in (("Scout", "closures"), ("Dispatcher", "routing"), ("Analyst", "connectivity")):
         graph.query(
-            "CREATE (:Agent {name: $name, role: $role, heartbeat_at: $at})",
-            {"name": name, "role": role, "at": T_CLOSE},
+            """
+            MERGE (a:Agent {name: $name})
+            SET a.role = $role, a.heartbeat_at = $at
+            """,
+            {"name": name, "role": role, "at": now},
         )
+    analyst = _run_analyst(graph, now)
     provisional = model.get("provisional") or {}
     center = prepared.get("center") or {"lat": spec["lat"], "lon": spec["lon"]}
     return {
@@ -501,11 +510,22 @@ def install_city_graph(settings: Settings, prepared: dict, spec: dict) -> dict:
         "intersections": loaded["intersections"],
         "road_edges": loaded["road_edges"],
         "passable": loaded["passable"],
-        "shelters": int(provisional.get("attached") or 0),
+        "shelters": int(model.get("shelters") or provisional.get("attached") or 0),
         "bbox": prepared.get("bbox") or bbox_dict(),
         "cch": loaded.get("cch"),
-        "shelter_model": model.get("stub"),
+        "shelter_model": "near" if model.get("written") else "unwritten",
+        "analyst": analyst.get("task_id"),
     }
+
+
+def _run_analyst(graph, at: str) -> dict:
+    """Cut-off and evacuation capacity for this tile. A failure does not abort the load."""
+    try:
+        from floodline.analysis import assess_loaded_area
+
+        return assess_loaded_area(graph, at=at)
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 def _with_place(payload: dict, spec: dict, prepared: dict | None = None) -> dict:

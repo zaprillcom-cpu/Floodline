@@ -1,4 +1,4 @@
-"""Admin token, SSE formatting, and Sahil stubs. None of these need FalkorDB."""
+"""Admin token, SSE formatting, and graph-operation helpers. None of these need FalkorDB."""
 
 from pathlib import Path
 
@@ -141,28 +141,56 @@ def test_a_bend_names_the_next_street():
     assert steps[1]["from_m"] == 100
 
 
-def test_llm_and_geocode_fall_back_to_the_keyword_planner():
+def test_llm_falls_back_without_a_key(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     text = "The Paiporta bridge on V-31 is under water"
     assert plan_with_llm(text) == plan(text)
+    assert plan_with_llm(text).planner == "keyword"
     geocoded = geocode_report("CV-36 flooded near Paiporta")
-    assert geocoded["stub"] == "geocode_report"
-    assert geocoded["owner"] == "Sahil"
     assert geocoded["edges"] == []
-    assert geocoded["narrator"] == "stub"
-    assert geocoded["tool"] == "noop"
+    assert geocoded["query"] == "CV-36"
+    assert "Paiporta" in geocoded["landmark"]
 
 
-def test_reroute_fanout_does_not_invent_citizens():
-    result = reroute_affected(None, "osm-1-2")
+def test_invalid_model_output_uses_the_keyword_planner():
+    def fake(_messages, _tools):
+        return {"content": "nope", "tool_calls": [{"name": "explode", "arguments": {"x": 1}}]}
+
+    call = plan_with_llm("Road flooded at 19.1663, 72.8526 and not passable", complete=fake)
+    assert call.planner == "keyword"
+    assert call.tool == "close_nearest"
+    assert "schema" in call.reasoning.lower()
+
+
+def test_valid_model_tool_call_keeps_the_llm_reasoning():
+    def fake(_messages, _tools):
+        return {
+            "content": "The report names CV-36, so that edge should close.",
+            "tool_calls": [
+                {
+                    "name": "close_road",
+                    "arguments": {"road_id": "cv-36", "road_name": "CV-36", "reason": "CV-36 is flooded"},
+                },
+                {"name": "severity", "arguments": {"level": "high", "note": "not passable"}},
+            ],
+        }
+
+    call = plan_with_llm("CV-36 flooded near Paiporta", complete=fake)
+    assert call.planner == "llm"
+    assert call.tool == "close_road"
+    assert call.args["road_id"] == "cv-36"
+    assert call.args["severity"] == "high"
+    assert "CV-36" in call.reasoning
+
+
+def test_reroute_fanout_needs_a_graph_of_citizens():
+    result = reroute_affected(_EmptyGraph(), "osm-1-2")
     assert result["citizens"] == []
     assert result["decisions"] == []
     assert result["road_id"] == "osm-1-2"
-    assert "TODO(Sahil)" in (reroute_affected.__doc__ or "")
-    assert "TODO(Sahil)" in (route_to_shelter.__doc__ or "")
-    assert "TODO(Sahil)" in (snap_point.__doc__ or "")
 
 
-def test_stub_sources_keep_the_sahil_marker():
+def test_graph_operations_dropped_the_sahil_marker():
     stubs = (ROOT / "floodline" / "stubs.py").read_text(encoding="utf-8")
     planner = (ROOT / "floodline" / "agents" / "llm_planner.py").read_text(encoding="utf-8")
     for name in (
@@ -174,9 +202,9 @@ def test_stub_sources_keep_the_sahil_marker():
         "def route_to_shelter",
     ):
         assert name in stubs
-    assert stubs.count("TODO(Sahil)") >= 6
+    assert "TODO(Sahil)" not in stubs
+    assert "TODO(Sahil)" not in planner
     assert "def plan_with_llm" in planner
-    assert "TODO(Sahil)" in planner
 
 
 def test_decision_event_names_the_cch_query():
@@ -187,6 +215,11 @@ def test_decision_event_names_the_cch_query():
     assert event["type"] == "decision"
     assert "db.idx.cch.query" in event["query"]
     assert "db.idx.cch.query" in query_label("cch", "route")
+
+
+class _EmptyGraph:
+    def query(self, _text, _params=None):
+        return _Result([])
 
 
 class _Result:

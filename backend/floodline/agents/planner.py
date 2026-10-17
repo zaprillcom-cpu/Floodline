@@ -15,6 +15,8 @@ class ToolCall:
     tool: str
     args: dict
     rationale: str
+    planner: str = "keyword"
+    reasoning: str = ""
 
 
 _BRIDGE = ("v-31", "v31", "paiporta bridge", "puente de paiporta")

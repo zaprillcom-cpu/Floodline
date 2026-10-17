@@ -1,7 +1,7 @@
 """Citizen-facing payloads: a route line, closures, and cut-off shades.
 
-Routing stays in FalkorDB through the existing CCH → A* → SPpaths chain.
-Shelter selection itself is the Sahil stub in ``stubs.route_to_shelter``.
+Shelter choice is ``route_to_shelter`` (snap, NEAR, then CCH). Cut-off shades
+come from ``shelter_reachability`` (WCC on PASSABLE toward open shelters).
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from floodline.navigation import build_steps, line_coordinates, path_hops
 from floodline.network import haversine_m
 from floodline.osm_network import bbox_dict, parse_bbox
 from floodline.routing import route
-from floodline.stubs import reroute_affected, route_to_shelter, shelter_reachability, snap_point
+from floodline.stubs import remember_route, reroute_affected, route_to_shelter, shelter_reachability, snap_point
 
 
 def _loaded(graph) -> bool:
@@ -25,8 +25,9 @@ def _place_rows(graph) -> list[dict]:
     for sid, name, kind, capacity, occupancy, slat, slon, osmid in rows(
         graph.query(
             """
-            MATCH (s:Shelter)-[:ACCESS]->(i:Intersection)
-            RETURN s.id, s.name, s.kind, s.capacity, s.occupancy, s.lat, s.lon, i.osmid
+            MATCH (s:Shelter)-[rel]->(i:Intersection)
+            WHERE type(rel) IN ['NEAR', 'ACCESS']
+            RETURN DISTINCT s.id, s.name, s.kind, s.capacity, s.occupancy, s.lat, s.lon, i.osmid
             """
         )
     ):
@@ -88,10 +89,12 @@ def _route_to_place(graph, lat: float, lon: float, place: dict) -> dict:
     snapped = snap_point(graph, lat, lon)
     found = route(graph, int(snapped["osmid"]), int(place["osmid"]))
     hops = path_hops(graph, found.osmids)
+    remember_route(graph, lat, lon, snapped, found, hops, {
+        "kind": place["role"],
+        "id": place["id"],
+        "name": place["name"],
+    })
     return {
-        "stub": "route_to_shelter",
-        "owner": "Sahil",
-        "fallback": "chosen",
         "origin": snapped,
         "destination": {
             "kind": place["role"],
@@ -182,9 +185,6 @@ def route_payload(
     alternatives = sorted((_as_choice(place, lat, lon) for place in places), key=lambda item: item["distance_m"])[:5]
     return {
         "ok": True,
-        "stub": raw["stub"],
-        "owner": raw["owner"],
-        "fallback": raw["fallback"],
         "origin": raw["origin"],
         "destination": raw["destination"],
         "algo": raw["algo"],
@@ -294,8 +294,9 @@ def _pins(graph) -> list[dict]:
     for sid, name, capacity, occupancy, slat, slon, osmid, ilat, ilon in rows(
         graph.query(
             """
-            MATCH (s:Shelter)-[:ACCESS]->(i:Intersection)
-            RETURN s.id, s.name, s.capacity, s.occupancy, s.lat, s.lon, i.osmid, i.lat, i.lon
+            MATCH (s:Shelter)-[rel]->(i:Intersection)
+            WHERE type(rel) IN ['NEAR', 'ACCESS']
+            RETURN DISTINCT s.id, s.name, s.capacity, s.occupancy, s.lat, s.lon, i.osmid, i.lat, i.lon
             """
         )
     ):
@@ -362,21 +363,34 @@ def _convex_hull(points: list[tuple[float, float]]) -> list[list[float]]:
 
 
 def cutoff_zones(graph) -> dict:
-    """Shades for flood vision. The WCC query itself is Sahil's stub."""
+    """Purple shades for components that cannot reach an open shelter."""
     reach = shelter_reachability(graph)
     zones = []
     for area in reach["areas"]:
         if not area.get("cut_off"):
             continue
-        found = rows(
-            graph.query(
-                """
-                MATCH (i:Intersection {district: $name})
-                RETURN i.lon, i.lat
-                """,
-                {"name": area["name"]},
+        osmids = area.get("osmids")
+        if osmids:
+            found = rows(
+                graph.query(
+                    """
+                    UNWIND $ids AS osmid
+                    MATCH (i:Intersection {osmid: osmid})
+                    RETURN i.lon, i.lat
+                    """,
+                    {"ids": [int(v) for v in osmids]},
+                )
             )
-        )
+        else:
+            found = rows(
+                graph.query(
+                    """
+                    MATCH (i:Intersection {district: $name})
+                    RETURN i.lon, i.lat
+                    """,
+                    {"name": area["name"]},
+                )
+            )
         points = [(float(lon), float(lat)) for lon, lat in found if lon is not None and lat is not None]
         ring = _convex_hull(points)
         if not ring:
@@ -388,12 +402,7 @@ def cutoff_zones(graph) -> dict:
                 "polygon": ring,
             }
         )
-    return {
-        "stub": reach["stub"],
-        "owner": reach["owner"],
-        "fallback": reach["fallback"],
-        "zones": zones,
-    }
+    return {"algo": reach.get("algo") or "algo.WCC", "zones": zones}
 
 
 def _graph_bbox(graph) -> dict:
@@ -456,6 +465,6 @@ def overlay_payload(settings: Settings | None = None) -> dict:
 
 
 def note_reroute(road_id: str, settings: Settings | None = None) -> dict:
-    """Record that citizen fan-out is still Sahil's. Does not write a Decision."""
+    """Reroute citizens whose active route uses this edge, and write the Decision."""
     graph = get_graph(settings)
     return reroute_affected(graph, road_id)

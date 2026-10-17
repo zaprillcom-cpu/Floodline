@@ -223,6 +223,46 @@ def path_hops(graph, osmids: list[int]) -> list[dict]:
     return hops
 
 
+def collapse_names(names: list[str]) -> list[str]:
+    """Drop blank labels and repeated consecutive street names.
+
+    OSM paths name every intersection after the same road, so a title built
+    from the raw node list reads "Aarey Road → Aarey Road".
+    """
+    collapsed: list[str] = []
+    for name in names:
+        text = str(name or "").strip()
+        if not text:
+            continue
+        if collapsed and collapsed[-1].casefold() == text.casefold():
+            continue
+        collapsed.append(text)
+    return collapsed
+
+
+def dedupe_route_title(title: str) -> str:
+    """Collapse consecutive duplicates in a 'Road → Road (12s)' title."""
+    text = (title or "").strip()
+    if "→" in text:
+        arrow = "→"
+    elif "->" in text:
+        arrow = "->"
+    else:
+        return title or ""
+    suffix = ""
+    body = text
+    if body.endswith(")") and "(" in body:
+        head, _, tail = body.rpartition("(")
+        if "→" not in tail and "->" not in tail:
+            body = head.rstrip()
+            suffix = f" ({tail}"
+    parts = [part.strip() for part in body.split(arrow)]
+    collapsed = collapse_names(parts)
+    if not collapsed:
+        return title or ""
+    return f" {arrow} ".join(collapsed) + suffix
+
+
 def line_coordinates(hops: list[dict]) -> list[list[float]]:
     coordinates: list[list[float]] = []
     for hop in hops:

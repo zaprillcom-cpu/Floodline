@@ -10,6 +10,7 @@ from floodline import cypher
 from floodline.config import T_CLOSE
 from floodline.db import rows
 from floodline.network import PLACES, haversine_m
+from floodline.navigation import collapse_names
 from floodline.routing import Route, route
 
 
@@ -202,7 +203,7 @@ def explain(graph, decision_id: str) -> dict:
         "agent": agent,
         "evidence_ids": list(evidence_ids or []),
         "narration": explanation,
-        "narrator": "stub",
+        "narrator": "stored",
     }
 
 
@@ -270,7 +271,7 @@ def write_route_decision(
             "at": at,
             "algo": found.algo,
             "explanation": explanation,
-            "summary": " → ".join(found.names) + f" ({found.travel_s}s)",
+            "summary": " → ".join(collapse_names(found.names)) + f" ({found.travel_s}s)",
             "travel_s": found.travel_s,
             "osmids": json.dumps(found.osmids),
             "names": json.dumps(found.names),
@@ -315,6 +316,9 @@ def write_close_decision(
     report_id: str,
     at: str,
     explanation: str,
+    planner: str = "",
+    reasoning: str = "",
+    severity: str = "",
 ) -> str:
     decision_id = _id("dec")
     seq = next_seq(graph)
@@ -329,7 +333,10 @@ def write_close_decision(
           explanation: $explanation,
           result_summary: $summary,
           superseded: false,
-          road_id: $road_id
+          road_id: $road_id,
+          planner: $planner,
+          reasoning: $reasoning,
+          severity: $severity
         })
         """,
         {
@@ -339,6 +346,9 @@ def write_close_decision(
             "explanation": explanation,
             "summary": f"Closed {road_name}",
             "road_id": road_id,
+            "planner": planner or "",
+            "reasoning": reasoning or "",
+            "severity": severity or "",
         },
     )
     graph.query(
@@ -430,7 +440,9 @@ def create_task(graph, **fields) -> str:
           from_osmid: $from_osmid,
           to_osmid: $to_osmid,
           report_id: $report_id,
-          close_decision_id: $close_decision_id
+          close_decision_id: $close_decision_id,
+          planner: $planner,
+          reasoning: $reasoning
         })
         """,
         {
@@ -446,9 +458,37 @@ def create_task(graph, **fields) -> str:
             "to_osmid": fields.get("to_osmid", 0),
             "report_id": fields.get("report_id", ""),
             "close_decision_id": fields.get("close_decision_id", ""),
+            "planner": fields.get("planner", "") or "",
+            "reasoning": fields.get("reasoning", "") or "",
         },
     )
     return task_id
+
+
+def link_task_report(graph, task_id: str, report_id: str) -> None:
+    if not task_id or not report_id:
+        return
+    graph.query(
+        """
+        MATCH (t:Task {id: $task}), (r:Report {id: $report})
+        MERGE (t)-[:FOR]->(r)
+        """,
+        {"task": task_id, "report": report_id},
+    )
+
+
+def link_report_closes(graph, report_id: str, road_id: str) -> None:
+    """(:Report)-[:CLOSES {road_id}]-> the intersections the closed ROAD edge leaves."""
+    if not report_id or not road_id:
+        return
+    graph.query(
+        """
+        MATCH (rep:Report {id: $report})
+        MATCH (a:Intersection)-[r:ROAD {road_id: $road_id}]->(b:Intersection)
+        MERGE (rep)-[c:CLOSES {road_id: $road_id}]->(b)
+        """,
+        {"report": report_id, "road_id": road_id},
+    )
 
 
 def handoff(graph, source_task: str, target_task: str, reason: str) -> None:

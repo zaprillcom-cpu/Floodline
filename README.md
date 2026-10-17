@@ -1,35 +1,36 @@
 # Floodline
 
-You're in a flooding Valencia street. Floodline routes you on real streets to the nearest open shelter, computed in FalkorDB, and bends the line when a report closes a road ahead. Scout, Dispatcher, and Analyst show their work live.
+A flood, an earthquake, a fire, or a landslide cuts a road. Floodline routes the person on that street to the nearest open shelter on the drive network already in FalkorDB, then bends the line when a new report closes a road on the way. Scout, Dispatcher, and Analyst coordinate through Task and Decision nodes and show that work on the Live and Graph tabs.
 
-This is a solo entry for [WeMakeDevs × FalkorDB Graph Hacks](https://github.com/zaprillcom-cpu/Floodline). The city graph is an OpenStreetMap drive network for the Valencia flood corridor. A 10-node synthetic network remains as the offline fallback.
+This is a solo entry for [WeMakeDevs × FalkorDB Graph Hacks](https://github.com/zaprillcom-cpu/Floodline). **Track 1 — Agents That Act on Connected Data** (primary): Scout closes the road the report names, Dispatcher reroutes, Analyst measures who can still reach a shelter. **Track 2 — Agent Memory and Coordination**: the handoff is a `Task` and a `Decision` in the graph, so a new process can resume it. Valencia is one corridor. The same three agents run on any loaded tile (Mumbai, Manhattan, or the browser's location). A 10-node synthetic network remains the offline fallback.
 
-Live: API [floodline-production.up.railway.app](https://floodline-production.up.railway.app) · web [floodline-xi.vercel.app](https://floodline-xi.vercel.app). The web app is a full-screen MapLibre map (OpenFreeMap dark, 3D buildings). Desktop gets a side HUD. A phone gets bottom tabs (Escape, Report, Live, Me) and a bottom sheet. Navigation is simulated GPS along the FalkorDB line.
+Live: API [floodline-production.up.railway.app](https://floodline-production.up.railway.app) · web [https://floodline-xi.vercel.app](https://floodline-xi.vercel.app). The web app is a full-screen MapLibre map (OpenFreeMap dark, 3D buildings). Desktop gets a side HUD. A phone gets bottom tabs (Escape, Report, Live, Me) and a bottom sheet. Navigation is simulated GPS along the FalkorDB line.
 
-## Who owns what
+## Who built what
 
-Sahil writes and explains the graph model, the Cypher, and the LLM planner. Cursor Grok 4.7 built the slices marked AI-assist. Stubs marked `TODO(Sahil)` fall back to the existing router and the keyword planner so the map still runs. Full note: [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
+Sahil directed the product, the graph model, and the Cypher, and reviews and explains the result. Cursor (Grok 4.7, in Cursor) wrote the code, including every function in the table below. Those functions are not Sahil's authorship. Full note: [AI_DISCLOSURE.md](AI_DISCLOSURE.md). A plain-language walkthrough for the demo is [docs/EXPLAINER.md](docs/EXPLAINER.md).
 
-| Task | Owner | Where |
+| Task | Written by | Where |
 |---|---|---|
-| Valencia extract inside `backend/`, `POST /api/admin/load-valencia` | AI-assist | `backend/floodline/api.py`, `backend/data/osm/` |
-| Streets around the citizen, `POST /api/area/load` | AI-assist | `backend/floodline/area.py`, `web/components/EscapeApp.tsx` |
-| Shelter and Citizen model (`NEAR`, `AT`, `CLOSES`) | Sahil | `ensure_shelter_citizen_model` in `backend/floodline/stubs.py` |
-| `route_to_shelter` (snap → top-k open shelters → CCH) | Sahil | `route_to_shelter` in `backend/floodline/stubs.py` |
-| MapLibre map, OpenFreeMap dark, 3D buildings | AI-assist | `web/components/FloodMap.tsx` |
-| Design tokens | AI-assist | `web/lib/theme.ts` |
-| LLM planner (`geocode`, `close_road`, `severity`) | Sahil | `plan_with_llm` in `backend/floodline/agents/llm_planner.py` |
-| Report geocoding onto ROAD edges | Sahil | `geocode_report` in `backend/floodline/stubs.py` |
-| Reroute fan-out and Decision explanations | Sahil | `reroute_affected` in `backend/floodline/stubs.py` |
-| Snap and shelter-reachability WCC | Sahil | `snap_point`, `shelter_reachability` in `backend/floodline/stubs.py` |
-| SSE `GET /api/stream` | AI-assist | `backend/floodline/events.py` |
-| Turn-by-turn steps and simulated GPS | AI-assist | `backend/floodline/navigation.py`, `web/lib/geo.ts` |
-| Live agent feed | AI-assist | `web/components/AgentFeed.tsx` |
-| Mobile tabs and bottom sheet | AI-assist | `web/components/MobileShell.tsx` |
-| Desktop HUD | AI-assist | `web/components/DesktopHud.tsx` |
-| Flood vision (UI). WCC query is Sahil's | AI-assist / Sahil | `FloodMap.tsx` / `shelter_reachability` |
-| Me tab (localStorage) | AI-assist | `web/components/MePanel.tsx` |
-| This README, disclosure, queries draft | AI-assist draft, Sahil reviews | this file, `AI_DISCLOSURE.md`, `docs/queries.md` |
+| Valencia extract inside `backend/`, `POST /api/admin/load-valencia` | Cursor | `backend/floodline/api.py`, `backend/data/osm/` |
+| Streets around the citizen, `POST /api/area/load` | Cursor | `backend/floodline/area.py`, `web/components/EscapeApp.tsx` |
+| Shelter and Citizen model (`NEAR`, `AT`, `ROUTED_TO`, `CLOSES`) | Cursor, at Sahil's direction | `ensure_shelter_citizen_model` in `backend/floodline/stubs.py` |
+| `route_to_shelter` (snap → top-k open shelters → CCH) | Cursor, at Sahil's direction | `route_to_shelter` in `backend/floodline/stubs.py` |
+| MapLibre map, OpenFreeMap dark, 3D buildings | Cursor | `web/components/FloodMap.tsx` |
+| Design tokens | Cursor | `web/lib/theme.ts` |
+| LLM planner (`geocode`, `close_road`, `severity`) | Cursor, at Sahil's direction | `plan_with_llm` in `backend/floodline/agents/llm_planner.py` |
+| Report geocoding onto ROAD edges | Cursor, at Sahil's direction | `geocode_report` in `backend/floodline/stubs.py` |
+| Reroute fan-out and Decision explanations | Cursor, at Sahil's direction | `reroute_affected` in `backend/floodline/stubs.py` |
+| Snap and shelter-reachability WCC | Cursor, at Sahil's direction | `snap_point`, `shelter_reachability` in `backend/floodline/stubs.py` |
+| Analyst on any loaded area (WCC + maxFlow) | Cursor, at Sahil's direction | `assess_loaded_area` in `backend/floodline/analysis.py` |
+| SSE `GET /api/stream` | Cursor | `backend/floodline/events.py` |
+| Turn-by-turn steps and simulated GPS | Cursor | `backend/floodline/navigation.py`, `web/lib/geo.ts` |
+| Live agent feed | Cursor | `web/components/AgentFeed.tsx` |
+| Mobile tabs and bottom sheet | Cursor | `web/components/MobileShell.tsx` |
+| Desktop HUD | Cursor | `web/components/DesktopHud.tsx` |
+| Cut-off shades on the map | Cursor | `FloodMap.tsx` / `shelter_reachability` |
+| Me tab (localStorage) | Cursor | `web/components/MePanel.tsx` |
+| This README, disclosure, explainer, queries | Cursor draft, Sahil reviews | this file, `AI_DISCLOSURE.md`, `docs/` |
 | Demo video | Sahil | — |
 
 ## Environment
@@ -37,6 +38,10 @@ Sahil writes and explains the graph model, the Cypher, and the LLM planner. Curs
 | Where | Variable | Value |
 |---|---|---|
 | Railway (service root `backend`) | `ADMIN_TOKEN` | secret. Guards `POST /api/admin/load-valencia`. Do not commit it. |
+| Railway | `OPENAI_API_KEY` | optional. When set, Scout uses `plan_with_llm` (OpenAI tool calling). When unset, the keyword planner still closes roads. Do not commit it. |
+| Railway | `OPENAI_MODEL` | optional. Default `gpt-4o-mini`. |
+| Railway | `OPENAI_BASE_URL` | optional. Default `https://api.openai.com/v1`. |
+| Railway | `FALKORDB_HOST`, `FALKORDB_PORT`, `FALKORDB_GRAPH` | the FalkorDB service. See `.env.example`. |
 | Vercel | `FLOODLINE_API_ORIGIN` | `https://floodline-production.up.railway.app` (no trailing slash) |
 | Local API | `FALKORDB_HOST`, `FALKORDB_PORT`, `FALKORDB_GRAPH` | see `.env.example` |
 
@@ -93,7 +98,7 @@ curl 'http://127.0.0.1:8000/api/route?lat=39.4294&lon=-0.4183&graph=valencia'
 curl 'http://127.0.0.1:8000/api/route?lat=19.1663&lon=72.8526&graph=fl-p1915-p07285'
 ```
 
-Limits: radius 50–5000 m (default 2000; the map asks for 2500 inside a bundled region), tile 0.05°, 4 uncached Overpass downloads per minute, 8 provisional shelters, 4 hospitals, four Overpass mirrors sharing a 40 s budget. Offline tiles skip that limit. An area with no shelter candidates has nowhere to route until Sahil's model, or a bundled city, supplies one. `ADMIN_TOKEN` still guards only `POST /api/admin/load-valencia`.
+Limits: radius 50–5000 m (default 2000; the map asks for 2500 inside a bundled region), tile 0.05°, 4 uncached Overpass downloads per minute, 8 provisional shelters, 4 hospitals, four Overpass mirrors sharing a 40 s budget. Offline tiles skip that limit. An area with no open shelter falls back to the nearest open hospital with free beds. `ADMIN_TOKEN` still guards only `POST /api/admin/load-valencia`. After a tile loads, Analyst runs `algo.WCC` and `algo.maxFlow` for that district and writes Task and Decision nodes the Live and Graph tabs already read. The Valencia/DANA sentence appears only on the synthetic corridor (or a district whose name contains Paiporta). Live reports and area loads stamp `utc_now()`, not the 2024-10-29 replay clock.
 
 **Tracks:** Track 1 — Agents That Act on Connected Data (primary). Track 2 — Agent Memory & Coordination.
 
@@ -166,21 +171,24 @@ Remove FalkorDB and this slice stops working. The route is not computed in Pytho
 
 ```mermaid
 flowchart LR
-  NET["Synthetic Valencia network"] --> ING["Python ingest"]
+  NET["OSM tile or synthetic network"] --> ING["Python ingest"]
   ING --> FDB[("FalkorDB v4.22.0")]
-  REPORT["Citizen report"] --> SCOUT["Scout"]
-  SCOUT --> TOOLS["Tools: snap, close_road, best_hospital"]
+  REPORT["Citizen report"] --> PLAN["plan_with_llm or keyword plan"]
+  PLAN --> SCOUT["Scout"]
+  SCOUT --> TOOLS["geocode, close_road, Citizen route"]
   TOOLS --> FDB
   FDB --> DISP["Dispatcher"]
-  DISP --> ROUTE["route: CCH, else A*, else SPpaths"]
+  DISP --> ROUTE["CCH, else A*, else SPpaths"]
   ROUTE --> FDB
+  FDB --> ANA["Analyst: WCC and maxFlow"]
+  ANA --> FDB
   FDB --> API["FastAPI"]
-  API --> UI["Next.js map: old path vs new path"]
+  API --> UI["Next.js: map, Live, Graph"]
 ```
 
-Scout and Dispatcher do not message each other. Scout writes a `Report`, a close `Decision`, and a `reassess` `Task`, then a `HANDOFF`. Dispatcher claims that task and writes a route `Decision` that `SUPERSEDES` the previous one.
+The agents do not message each other in process memory. Scout writes a `Report`, a close `Decision` (`planner` is `llm` or `keyword`), an `ingest_report` Task, and a `reassess` Task, then a `HANDOFF`. Dispatcher claims that task and writes a route `Decision` that `SUPERSEDES` the previous one. Analyst claims an `assess` Task (handoff from the reassess task), runs WCC and maxFlow for every District on the loaded graph, and writes `alert` and `evac_plan` Decisions. That chain runs for a Valencia replay and for a tile loaded around the user.
 
-The planner (`backend/floodline/agents/planner.py`) is a deterministic stub. It only picks a tool. See [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
+`plan_with_llm` calls OpenAI only when `OPENAI_API_KEY` is set. It sends the report plus candidate roads and nearby shelters already read from FalkorDB. A missing key, a transport error, or a tool call that fails the schema falls back to the keyword planner in `backend/floodline/agents/planner.py`. The Decision records which planner ran. See [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
 ## Graph data model
 
@@ -194,43 +202,69 @@ The synthetic demo and the OSM load use the same labels. Counts below are the sy
 | `District` | `name`, `population`, `zone_id`, `population_source`, `cut_off` | Synthetic demo: Paiporta. OSM load: Paiporta, Alfafar, Sedaví, Benetússer, Valencia (nearest centroid). Population is synthetic. |
 | `Unit` | `callsign`, `status`, `lat`, `lon` | Ambulance `A-7`, status `transport`. |
 | `Report` | `id`, `text`, `received_at`, `channel`, `confidence` | The citizen report Scout ingests. |
-| `Agent` | `name`, `role`, `heartbeat_at` | `Scout`, `Dispatcher`. |
-| `Task` | `id`, `kind`, `status`, `priority`, `created_at`, `road_id`, `from_osmid`, `to_osmid` | `ingest_report` (done) and `reassess` (claimed, then done). |
-| `Decision` | `id`, `seq`, `at`, `kind`, `algo`, `explanation`, `result_summary`, `superseded`, `travel_s`, `path_osmids`, `path_names`, `road_id` | `kind` is `route` or `close`. Paths are JSON strings. |
-| `Meta` | `key`, `algo`, `available`, `seq` | Which router won the probe, and a sequence counter. |
+| `Citizen` | `id`, `lat`, `lon`, `updated_at`, `eta_s`, `algo`, `active`, `shelter_id`, `origin_osmid`, `path_osmids`, `decision_id` | One active evacuee per graph (`id` = `citizen`). GPS updates rewrite the same node. |
+| `Agent` | `name`, `role`, `heartbeat_at` | `Scout`, `Dispatcher`, `Analyst`. Heartbeats on live reports and area loads are `utc_now()`. |
+| `Task` | `id`, `kind`, `status`, `priority`, `created_at`, `road_id`, `from_osmid`, `to_osmid`, `planner`, `reasoning` | `ingest_report`, `reassess`, `assess`. `planner` is `llm`, `keyword`, or `falkordb`. |
+| `Decision` | `id`, `seq`, `at`, `kind`, `algo`, `explanation`, `result_summary`, `superseded`, `travel_s`, `path_osmids`, `path_names`, `road_id`, `planner`, `reasoning`, `reason`, `old_eta_s`, `new_eta_s` | `kind` is `route` (ambulance), `citizen_route`, `close`, `reopen`, `alert`, or `evac_plan`. `citizen_route` is separate so the ambulance before/after pair stays intact. |
+| `Meta` | `key`, `algo`, `available`, `seq`, `source` | Which router won the probe, a sequence counter, and `source` (`synthetic` or `osm`). |
 
 | Relationship | From → to | Properties |
 |---|---|---|
 | `ROAD` | Intersection → Intersection | `road_id`, `name`, `osm_way` (`synthetic/…` or an OSM way id), `length_m`, `speed_kph`, `base_travel_s`, `travel_s`, `capacity`, `status`, and on closure `closed_at`, `closed_by`. OSM edges also have `highway` and `base_capacity`. |
 | `PASSABLE` | Intersection → Intersection | `road_id`. Present only while the road is open. |
-| `ACCESS` | Hospital, Shelter, or Unit → Intersection | `dist_m` |
+| `ACCESS` | Hospital, Shelter, or Unit → Intersection | `dist_m`. Kept so pins and maxFlow still see facilities that predate `NEAR`. |
+| `NEAR` | Shelter → Intersection | `dist_m`. Shelter choice ranks these, then asks CCH for travel time. |
+| `AT` | Citizen → Intersection | The snapped origin. Replaced on each route update. |
+| `ROUTED_TO` | Citizen → Intersection | `seq`, `road_id`. One edge per hop of the active escape route. |
+| `CLOSES` | Report → Intersection | `road_id`. The closed edge's destination. |
+| `FOR` | Task → Report | The report that opened the task. |
+| `REROUTED` | Decision → Citizen | Written when a closed edge was on that citizen's active route. |
 | `IN_DISTRICT` | Intersection → District | |
 | `CLAIMED` | Agent → Task | `at` |
 | `HANDOFF` | Task → Task | `reason` |
 | `MADE` | Agent → Decision | |
 | `BASED_ON` | Decision → Report or Decision | |
-| `AFFECTS` | Decision → Unit | |
+| `AFFECTS` | Decision → Unit, Citizen, or District | |
 | `USED_EDGE` | Decision → Intersection | `seq` |
 | `SUPERSEDES` | Decision → Decision | The new route points at the old one. |
 
-Indexes created at load: `Intersection(osmid)`, `Intersection(loc)`, `Hospital(id)`, `Task(status)`, `Decision(id)`, `ROAD(status)`, and `CREATE CCH INDEX FOR ()-[e:ROAD]->() ON (e.travel_s)`.
+Indexes: `Intersection(osmid)`, `Intersection(loc)`, `Hospital(id)`, `Shelter(id)`, `Citizen(id)`, `Report(id)`, `Task(status)`, `Decision(id)`, `ROAD(status)`, and `CREATE CCH INDEX FOR ()-[e:ROAD]->() ON (e.travel_s)`.
 
 ```mermaid
 graph LR
   I1((Intersection)) -- "ROAD travel_s, capacity" --> I2((Intersection))
   I1 -- PASSABLE --> I2
+  S[Shelter] -- NEAR --> I2
+  S -- ACCESS --> I2
   H[Hospital] -- ACCESS --> I2
-  U[Unit A-7] -- ACCESS --> I1
+  U[Unit] -- ACCESS --> I1
+  C[Citizen] -- AT --> I1
+  C -- ROUTED_TO --> I2
   A[Agent] -- MADE --> D[Decision]
-  D -- BASED_ON --> R[Report]
-  D -- SUPERSEDES --> D0[Decision prev]
-  D -- USED_EDGE --> I1
   A -- CLAIMED --> T[Task]
+  T -- HANDOFF --> T2[Task]
+  T -- FOR --> R[Report]
+  R -- CLOSES --> I2
+  D -- BASED_ON --> R
+  D -- SUPERSEDES --> D0[Decision prev]
+  D -- AFFECTS --> C
+  D -- REROUTED --> C
+  D -- USED_EDGE --> I1
 ```
 
-The replay command loads `Tick` and one synthetic `Incident`. `algo.WCC` and `algo.maxFlow` run in the cut-off demo and at tick 2. Still not loaded: `FloodZone`, and a vector index on `Report.emb`.
+Key procedures, all inside FalkorDB v4.22.0:
 
-Full query text: [docs/queries.md](docs/queries.md).
+| Question | Procedure |
+|---|---|
+| Nearest intersection to a GPS fix | Point index: `distance(i.loc, point({latitude, longitude}))`, then a haversine scan if `loc` is missing |
+| Which ROAD a street name closes | `toLower(r.name) CONTAINS` the road code, then distance as a tie-break |
+| Fastest open path | `db.idx.cch.query` on `ROAD.travel_s`, else `algo.AStar`, else `algo.SPpaths`. Weights at or above 1e8 are discarded |
+| Who cannot reach an open shelter | `algo.WCC` on `PASSABLE`. A component with no open shelter is cut off |
+| Evacuation rate | `algo.maxFlow` on `ROAD.capacity` from district intersections to shelter intersections. The shelter node is removed from the source set so the two sets stay disjoint |
+
+Full query text: [docs/queries.md](docs/queries.md). How to explain each function: [docs/EXPLAINER.md](docs/EXPLAINER.md).
+
+The replay command loads `Tick` and one synthetic `Incident`. `algo.WCC` and `algo.maxFlow` run in the cut-off demo and at tick 2. Still not loaded: `FloodZone`, and a vector index on `Report.emb`.
 
 ## Reproduce one closure → one reroute
 
@@ -312,14 +346,14 @@ Closing the bridge changes A-7's ETA and does not change evacuation throughput. 
 
 ## Agents
 
-| Agent | This slice |
+| Agent | What it writes |
 |---|---|
-| Scout | Stub planner extracts a road. `close_road` updates `ROAD` and deletes `PASSABLE`. Writes `Report`, close `Decision`, and a `reassess` task with `HANDOFF`. The origin is the `Unit` node in the graph. |
-| Dispatcher | Claims the open `reassess` task in one query, and only if the `Agent` node exists. Calls `route`. Writes a route `Decision` with `SUPERSEDES`, `BASED_ON` (the close decision and the report), `USED_EDGE`, and `AFFECTS`. A new process resumes a task left `claimed` and then claims anything still `open`. |
-| Analyst | `cut_off_areas` runs `algo.WCC` on `PASSABLE` and sets `District.cut_off`. |
-| Evacuation planner | `evac_capacity` runs `algo.maxFlow` from the district to shelters and names the saturated critical edge. |
+| Scout | `plan_with_llm` (keyword fallback) picks the road. A named code such as CV-36 is geocoded onto `ROAD` edges; a coordinate uses `close_nearest`. `close_road` sets `travel_s = 1e9`, `capacity = 0`, and deletes `PASSABLE`. Writes `Report-CLOSES`, a close `Decision` (planner and reasoning), `ingest_report` and `reassess` Tasks, and `HANDOFF`. |
+| Dispatcher | Claims the open `reassess` task in one query, and only if the `Agent` node exists. Calls `route` (CCH, else A*, else SPpaths). Writes a route `Decision` with `SUPERSEDES`, `BASED_ON`, `USED_EDGE`, and `AFFECTS`. Consecutive repeated street names in the title are collapsed. A new process resumes a task left `claimed`. |
+| Citizen route | `GET /api/route` calls `route_to_shelter`: snap, top 5 open shelters by `NEAR`, lowest CCH travel time. Writes `Citizen-AT` and `Citizen-ROUTED_TO`. A later GPS fix updates that Decision in place. If the closed road is on the citizen's route, `reroute_affected` writes a new `citizen_route` Decision (`SUPERSEDES`, `BASED_ON`, `AFFECTS`, `REROUTED`). |
+| Analyst | On every filed report and every loaded area, `assess_loaded_area` runs `algo.WCC` on `PASSABLE` toward open shelters and `algo.maxFlow` on `ROAD.capacity` for each District. Writes an `assess` Task, a `HANDOFF`, an `alert` Decision, and an `evac_plan` Decision. |
 
-`explain(decision_id)` walks `BASED_ON` and `SUPERSEDES`. The returned narration is the stored explanation, not a model call.
+`explain(decision_id)` walks `BASED_ON` and `SUPERSEDES`. The returned narration is the stored explanation. The Live card shows the planner (`llm` or `keyword`) and the model's reasoning when there is one. Card times are the Decision's `at`, which is real UTC for live reports.
 
 ## Data and licenses
 
@@ -329,7 +363,7 @@ The October 2024 DANA floods in Valencia killed more than 200 people. Floodline 
 
 ## AI assistance
 
-Cursor Grok 4.7 wrote the loader, the API, the map, and the stubs. Sahil owns the Shelter/Citizen model, `route_to_shelter`, reroute fan-out, snap, shelter WCC, report geocoding, and the LLM planner. The in-product planner is still the keyword stub. Full note: [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
+Cursor (Grok 4.7, in Cursor) wrote the loader, the API, the map, and the graph operations in `stubs.py` and `llm_planner.py`, at Sahil's direction. Sahil reviews and explains them. He did not write those functions. With `OPENAI_API_KEY` set, Scout's planner is a live OpenAI tool call; without it, the keyword planner runs and the Decision says `planner: keyword`. Full note: [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
 ## Team
 

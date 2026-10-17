@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 
 from floodline import cypher
-from floodline.config import T_CLOSE
+from floodline.config import T_CLOSE, utc_now
 from floodline.db import rows
 from floodline.tools import close_road, next_seq
 
@@ -203,7 +203,7 @@ def record_corridor(graph, result: dict, at: str = T_CLOSE) -> None:
     )
 
 
-def _write_decision(graph, *, at, kind, algo, summary, explanation, district) -> None:
+def _write_decision(graph, *, at, kind, algo, summary, explanation, district) -> str:
     decision_id = f"dec-{uuid.uuid4().hex[:10]}"
     seq = next_seq(graph)
     graph.query(
@@ -233,12 +233,134 @@ def _write_decision(graph, *, at, kind, algo, summary, explanation, district) ->
         """
         MATCH (a:Agent {name: 'Analyst'}), (d:Decision {id: $id})
         CREATE (a)-[:MADE]->(d)
-        WITH d
-        MATCH (dist:District {name: $district})
-        CREATE (d)-[:AFFECTS]->(dist)
         """,
-        {"id": decision_id, "district": district},
+        {"id": decision_id},
     )
+    if district:
+        graph.query(
+            """
+            MATCH (d:Decision {id: $id}), (dist:District {name: $district})
+            CREATE (d)-[:AFFECTS]->(dist)
+            """,
+            {"id": decision_id, "district": district},
+        )
+    return decision_id
+
+
+def assess_loaded_area(graph, at: str | None = None, report_id: str = "", previous_task: str = "") -> dict:
+    """WCC cut-off and max-flow for whatever district this graph actually loaded.
+
+    Writes an Analyst task plus alert and evac_plan decisions so Scout,
+    Dispatcher, and Analyst show up together on any city, not only the
+    Valencia corridor.
+    """
+    from floodline.stubs import shelter_reachability
+    from floodline.tools import claim_task, create_task, finish_task, handoff, link_task_report
+
+    at = at or utc_now()
+    graph.query(
+        """
+        MERGE (a:Agent {name: 'Analyst'})
+        SET a.role = 'connectivity', a.heartbeat_at = $at
+        """,
+        {"at": at},
+    )
+    reach = shelter_reachability(graph)
+    districts = [name for (name,) in rows(graph.query("MATCH (d:District) RETURN d.name ORDER BY d.name"))]
+    flows = []
+    for name in districts:
+        try:
+            flows.append(evac_capacity(graph, name))
+        except Exception as exc:
+            flows.append({"district": name, "max_flow": None, "error": str(exc), "critical_edge": None})
+    task_id = create_task(
+        graph,
+        kind="assess",
+        status="open",
+        priority=4,
+        created_at=at,
+        road_id="",
+        road_name="",
+        from_osmid=0,
+        to_osmid=0,
+        report_id=report_id or "",
+        close_decision_id="",
+        planner="falkordb",
+    )
+    if report_id:
+        link_task_report(graph, task_id, report_id)
+    claim_task(graph, "Analyst", "assess", at)
+    finish_task(graph, task_id, "done")
+    if previous_task:
+        handoff(graph, previous_task, task_id, "recompute cut-off and evacuation capacity")
+    cut = [area for area in reach["areas"] if area.get("cut_off") and "isolated" not in area["name"]]
+    pockets = [area for area in reach["areas"] if area.get("cut_off") and area.get("osmids")]
+    if cut:
+        summary = ", ".join(area["name"] for area in cut) + " cannot reach an open shelter"
+    elif pockets:
+        summary = f"{len(pockets)} pocket(s) cannot reach an open shelter"
+    else:
+        summary = "Every loaded area can reach an open shelter"
+    names = ", ".join(area["name"] for area in cut) or "none"
+    alert_id = _write_decision(
+        graph,
+        at=at,
+        kind="alert",
+        algo="algo.WCC",
+        summary=summary,
+        explanation=(
+            f"Analyst ran algo.WCC on PASSABLE. Open shelters are in component(s) "
+            f"{reach['shelter_components'] or 'none'}. "
+            f"Areas with no path to an open shelter: {names}."
+        ),
+        district=districts[0] if districts else "",
+    )
+    flow_ids = []
+    for flow in flows:
+        if flow.get("error"):
+            text = f"algo.maxFlow did not finish for {flow['district']}: {flow['error']}"
+            flow_value = "unavailable"
+        else:
+            critical = flow.get("critical_edge")
+            critical_text = "none"
+            if critical:
+                critical_text = (
+                    f"{critical['name']} ({critical['flow']} of {critical['capacity']} veh/h)"
+                )
+            flow_value = f"{flow['max_flow']} veh/h"
+            text = (
+                f"Analyst ran algo.maxFlow on ROAD.capacity from {flow['district']} "
+                f"to open shelters. Evacuation capacity is {flow['max_flow']} veh/h. "
+                f"Critical edge: {critical_text}."
+            )
+        flow_ids.append(
+            _write_decision(
+                graph,
+                at=at,
+                kind="evac_plan",
+                algo="algo.maxFlow",
+                summary=f"maxFlow {flow_value}",
+                explanation=text,
+                district=flow["district"],
+            )
+        )
+    if report_id:
+        for decision_id in [alert_id, *flow_ids]:
+            if not decision_id:
+                continue
+            graph.query(
+                """
+                MATCH (d:Decision {id: $id}), (rep:Report {id: $report})
+                MERGE (d)-[:BASED_ON]->(rep)
+                """,
+                {"id": decision_id, "report": report_id},
+            )
+    return {
+        "task_id": task_id,
+        "areas": reach["areas"],
+        "flows": flows,
+        "decisions": [item for item in [alert_id, *flow_ids] if item],
+    }
 
 
 def assert_paiporta_cutoff(result: dict) -> None:

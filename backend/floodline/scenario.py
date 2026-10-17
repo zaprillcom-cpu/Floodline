@@ -6,7 +6,7 @@ import json
 
 from floodline.agents.dispatcher import reroute
 from floodline.agents.scout import handle_report
-from floodline.config import T_CLOSE, T_ROUTE, Settings
+from floodline.config import T_CLOSE, T_ROUTE, Settings, utc_now
 from floodline.db import get_graph, rows
 from floodline.ingest import reset_and_load
 from floodline.network import DEMO_REPORT, UNIT_CALLSIGN, UNIT_OSMID, haversine_m
@@ -138,7 +138,7 @@ def reopen_roads(
         graph,
         road_id=chosen[0]["road_id"] if len(chosen) == 1 else "",
         road_name=names,
-        at=T_CLOSE,
+        at=utc_now(),
         explanation=explanation,
     )
     dispatcher: dict = {"claimed": False}
@@ -151,14 +151,14 @@ def reopen_roads(
                 kind="reassess",
                 status="open",
                 priority=5,
-                created_at=T_CLOSE,
+                created_at=utc_now(),
                 road_id=chosen[0]["road_id"],
                 road_name=names,
                 from_osmid=int(unit["osmid"]),
                 to_osmid=int(hospital["osmid"]),
                 close_decision_id=decision_id,
             )
-            dispatcher = reroute(graph, at=T_CLOSE)
+            dispatcher = reroute(graph, at=utc_now())
     except Exception:
         dispatcher = {"claimed": False, "error": "reroute skipped"}
     state = snapshot(cfg)
@@ -171,14 +171,27 @@ def reopen_roads(
     return state
 
 
-def file_report(text: str = DEMO_REPORT, settings: Settings | None = None) -> dict:
+def file_report(text: str = DEMO_REPORT, settings: Settings | None = None, at: str | None = None) -> dict:
     cfg = settings or Settings.from_env()
     graph = get_graph(cfg)
-    scout = handle_report(graph, text, at=T_CLOSE)
-    dispatcher = reroute(graph, at=T_CLOSE)
+    when = at or utc_now()
+    scout = handle_report(graph, text, at=when)
+    dispatcher = reroute(graph, at=when)
+    try:
+        from floodline.analysis import assess_loaded_area
+
+        analyst = assess_loaded_area(
+            graph,
+            at=when,
+            report_id=scout.get("report_id") or "",
+            previous_task=dispatcher.get("task_id") or scout.get("task_id") or "",
+        )
+    except Exception as exc:
+        analyst = {"error": str(exc)}
     state = snapshot(cfg)
     state["scout"] = scout
     state["dispatcher"] = dispatcher
+    state["analyst"] = analyst
     return state
 
 
@@ -300,6 +313,8 @@ def snapshot(settings: Settings | None = None) -> dict:
         road_id,
         previous_id,
         agent,
+        planner,
+        reasoning,
     ) in rows(
         graph.query(
             """
@@ -308,7 +323,7 @@ def snapshot(settings: Settings | None = None) -> dict:
             OPTIONAL MATCH (a:Agent)-[:MADE]->(d)
             RETURN d.id, d.seq, d.at, d.kind, d.algo, d.explanation,
                    d.result_summary, d.superseded, d.travel_s, d.path_osmids,
-                   d.path_names, d.road_id, prev.id, a.name
+                   d.path_names, d.road_id, prev.id, a.name, d.planner, d.reasoning
             ORDER BY d.seq
             """
         )
@@ -329,6 +344,8 @@ def snapshot(settings: Settings | None = None) -> dict:
                 "road_id": road_id or None,
                 "previous_id": previous_id,
                 "agent": agent,
+                "planner": planner or "",
+                "reasoning": reasoning or "",
             }
         )
 
@@ -386,11 +403,7 @@ def snapshot(settings: Settings | None = None) -> dict:
     return {
         "loaded": True,
         "graph": cfg.graph,
-        "clock": {
-            "opening": T_ROUTE,
-            "closure": T_CLOSE,
-            "label": "reconstructed",
-        },
+        "clock": _clock(network),
         "router": router,
         "network": network,
         "counts": {
@@ -408,6 +421,13 @@ def snapshot(settings: Settings | None = None) -> dict:
         "decisions": decisions,
         "narrative": narrative,
     }
+
+
+def _clock(network: dict) -> dict:
+    """The scripted Valencia replay keeps its reconstructed clock. Other areas do not."""
+    if (network or {}).get("source") == "synthetic":
+        return {"opening": T_ROUTE, "closure": T_CLOSE, "label": "reconstructed"}
+    return {"opening": "", "closure": "", "label": "live"}
 
 
 def _routes_from_decisions(decisions: list[dict]) -> dict:
