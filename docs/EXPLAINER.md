@@ -1,6 +1,6 @@
 # Explaining the graph operations
 
-This is the walkthrough for the demo. Each function below was implemented by Cursor (Grok 4.7) at Sahil's direction. Sahil reviews it and can explain it. He did not write the functions.
+This is the walkthrough for the demo. Submitted by Vishnuraj, built with Sahil Mane and an AI coding assistant (Cursor). Each function below was implemented by the AI assistant (Cursor, Grok 4.7). The AI assistant wrote most of the code, including these core functions (Shelter/Citizen nodes, routing and reroute queries, LLM planner). Vishnuraj and Sahil Mane directed the product, made the design decisions, and reviewed and tested the work. They did not write the functions.
 
 FalkorDB v4.22.0 does the lookup and the algorithms. Python asks, ranks a short list, and writes Decision nodes. The model, when it runs, only picks a tool from roads the graph already returned.
 
