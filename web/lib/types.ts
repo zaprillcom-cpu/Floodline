@@ -123,6 +123,9 @@ export type RouteView = {
 
 export type Snapshot = {
   loaded: boolean;
+  rejected?: boolean;
+  action?: string;
+  message?: string;
   graph?: string;
   clock?: { opening: string; closure: string; label: string };
   router?: {

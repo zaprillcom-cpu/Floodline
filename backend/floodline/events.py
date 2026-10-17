@@ -58,7 +58,7 @@ def query_label(algo: str | None, kind: str | None) -> str:
 def _agent(name: str | None, kind: str | None) -> str:
     if name:
         return str(name)
-    if kind in ("close", "reopen", "ingest_report"):
+    if kind in ("close", "reopen", "ingest_report", "reject", "request_clarification", "duplicate"):
         return "Scout"
     if kind in ("route", "reassess", "citizen_route"):
         return "Dispatcher"

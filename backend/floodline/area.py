@@ -285,6 +285,7 @@ def persist_area(
         attach_facilities(graph, snaps)
     snapped = snap_shelters(prepared["nodes"], candidates)
     model = ensure_shelter_citizen_model(graph, snapped)
+    landmarks_written = _index_tile_landmarks(graph, prepared, candidates, hospitals or [])
     now = utc_now()
     for name, role in (("Scout", "closures"), ("Dispatcher", "routing"), ("Analyst", "connectivity")):
         graph.query(
@@ -307,8 +308,25 @@ def persist_area(
         "bbox": prepared.get("bbox") or bbox_dict(),
         "cch": loaded.get("cch"),
         "shelter_model": "near" if model.get("written") else "unwritten",
+        "landmarks": landmarks_written,
         "analyst": analyst.get("task_id"),
     }
+
+
+def _index_tile_landmarks(graph, prepared: dict, shelters: list[dict], hospitals: list[dict]) -> int:
+    """Write Landmark-NEAR from places already on the tile, plus a short POI fetch."""
+    try:
+        from floodline.landmarks import fetch_poi_landmarks, index_landmarks, landmark_records
+
+        records = list(prepared.get("landmarks") or [])
+        if not records:
+            records = landmark_records(shelters, hospitals)
+            bbox = prepared.get("bbox")
+            if isinstance(bbox, dict):
+                records.extend(fetch_poi_landmarks(bbox))
+        return index_landmarks(graph, records, prepared.get("nodes") or [])
+    except Exception:
+        return 0
 
 
 def _report(on_status, status: str, message: str) -> None:

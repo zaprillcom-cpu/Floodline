@@ -169,9 +169,12 @@ def test_valid_model_tool_call_keeps_the_llm_reasoning():
             "tool_calls": [
                 {
                     "name": "close_road",
-                    "arguments": {"road_id": "cv-36", "road_name": "CV-36", "reason": "CV-36 is flooded"},
-                },
-                {"name": "severity", "arguments": {"level": "high", "note": "not passable"}},
+                    "arguments": {
+                        "road_id": "cv-36",
+                        "road_name": "CV-36",
+                        "reason": "CV-36 is the named road. Nearby names were not in the report.",
+                    },
+                }
             ],
         }
 
@@ -179,8 +182,8 @@ def test_valid_model_tool_call_keeps_the_llm_reasoning():
     assert call.planner == "llm"
     assert call.tool == "close_road"
     assert call.args["road_id"] == "cv-36"
-    assert call.args["severity"] == "high"
     assert "CV-36" in call.reasoning
+    assert call.args["reason"]
 
 
 def test_reroute_fanout_needs_a_graph_of_citizens():

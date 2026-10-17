@@ -335,7 +335,47 @@ If `loc` is missing, Python scans `Intersection.lat/lon` with haversine. Passing
 
 ### Geocode (`geocode_report`)
 
-Road codes such as `CV-36` are the primary token. The query is `toLower(r.name) CONTAINS toLower($token)`. A landmark after "near", "at", or "by" only breaks ties, together with distance from the reported point. "CV-36 flooded near Paiporta" closes CV-36.
+Road codes (`CV-36`), short aliases (`SV`, `MG`, `WEH`, `GMLR`, `LBS`), and numbered roads (`No.6`) are the tokens. The Cypher prefilter is:
+
+```cypher
+MATCH (a:Intersection)-[r:ROAD]->(b:Intersection)
+WHERE toLower(coalesce(r.name, '')) CONTAINS toLower($token)
+RETURN r.road_id, r.name, a.lat, a.lon, b.lat, b.lon,
+       coalesce(r.highway, ''), coalesce(r.status, 'open')
+```
+
+Python then requires a whole word (`tree` does not match `street`, `no 6` does not match `Road No.16`) and drops names that are only an OSM highway type. "CV-36 flooded near Paiporta" returns CV-36. The landmark is not searched as a road name when a road token is already present.
+
+A landmark is:
+
+```cypher
+MATCH (l:Landmark)-[:NEAR]->(i:Intersection)
+WHERE toLower(l.name) CONTAINS toLower($token)
+RETURN l.id, l.name, l.lat, l.lon, i.osmid
+LIMIT 12
+```
+
+Roads touching that intersection:
+
+```cypher
+MATCH (i:Intersection {osmid: $osmid})-[r:ROAD]-(j:Intersection)
+RETURN DISTINCT r.road_id, r.name, i.lat, i.lon, j.lat, j.lon,
+       coalesce(r.highway, ''), coalesce(r.status, 'open')
+```
+
+Python ranks at most eight candidates by landmark distance, then reporter distance, then name overlap. The model receives `name` and `dist_m` and picks one `road_id`.
+
+Landmarks are written when a tile is persisted:
+
+```cypher
+MATCH (i:Intersection {osmid: $osmid})
+MERGE (l:Landmark {id: $id})
+SET l.name = $name, l.kind = $kind, l.lat = $lat, l.lon = $lon
+MERGE (l)-[n:NEAR]->(i)
+SET n.dist_m = $dist
+```
+
+Places come from named schools and hospitals on the tile, plus one Overpass query for malls, stations, hospitals, and schools. A cached tile is not backfilled.
 
 ### Shelter model (`ensure_shelter_citizen_model`)
 
@@ -359,7 +399,7 @@ ORDER BY n.dist_m ASC
 LIMIT $k
 ```
 
-Python keeps the first five that are open and not full, then calls `routing.route` (CCH, else A*, else SPpaths) and keeps the lowest `travel_s`. The active Citizen is `MERGE`d. Old `AT` and `ROUTED_TO` edges are deleted and rewritten:
+Python keeps the first five that are open and not full, then calls `routing.route` (CCH, else A*, else SPpaths) and keeps the lowest `travel_s`. The Citizen id is the browser session (`citizen` query on `GET /api/route`), or `citizen` when the client omits a valid id. That node is `MERGE`d. Its old `AT` and `ROUTED_TO` edges are deleted and rewritten:
 
 ```cypher
 UNWIND $hops AS hop
@@ -377,7 +417,42 @@ WHERE r.road_id = $road_id AND coalesce(c.active, true) = true
 RETURN DISTINCT c.id, c.lat, c.lon, c.eta_s, c.decision_id
 ```
 
-Each match is routed again with `record_decision=False`, so the new Decision does not supersede itself. The new Decision `SUPERSEDES` the old one, `BASED_ON` the Report, and both `AFFECTS` and `REROUTED` the Citizen. It stores `reason`, `old_eta_s`, and `new_eta_s`.
+`file_report` passes the `road_id` Scout just closed, not the last id in the alphabetically sorted closed-road list. Each match is routed again with `record_decision=False`, so the new Decision does not supersede itself. The new Decision `SUPERSEDES` the old one, `BASED_ON` the Report, and both `AFFECTS` and `REROUTED` the Citizen. It stores `reason`, `old_eta_s`, and `new_eta_s`.
+
+The green line on Show graph prefers the latest citizen path:
+
+```cypher
+MATCH (c:Citizen)
+WHERE c.path_osmids IS NOT NULL AND c.path_osmids <> ''
+RETURN c.path_osmids
+ORDER BY c.updated_at DESC
+LIMIT 1
+```
+
+### Dispatcher when the path did not change
+
+If the new ambulance osmids equal the previous active `kind: route` Decision, the reassess task is finished with `result: unchanged` and no new Decision is written.
+
+### Duplicate report
+
+When the chosen road is already closed:
+
+```cypher
+MATCH (n:Report {id: $new}), (o:Report {id: $old})
+MERGE (n)-[:DUPLICATE_OF]->(o)
+```
+
+The new Report has `status: duplicate`. A rejected or vague report is stored with `status: rejected` or `status: needs_location` and a notice Decision (`kind: reject` or `request_clarification`). No road is closed.
+
+### Memory reset
+
+`POST /api/admin/memory/reset?graph=` (admin token) reopens closed roads, then:
+
+```cypher
+MATCH (n)
+WHERE n:Report OR n:Task OR n:Decision OR n:Citizen
+DETACH DELETE n
+```
 
 ### Shelter reachability (`shelter_reachability`)
 
@@ -394,6 +469,6 @@ Open shelters contribute their component ids. A District is `cut_off` when none 
 
 ### Planner (`plan_with_llm`)
 
-Not Cypher. The model receives the report plus the geocoded candidate roads and nearby `NEAR` shelters. Accepted tools are `geocode`, `close_road`, and `severity` (`low|medium|high|critical`). One invalid call rejects the whole reply and the keyword planner runs. The close Decision and the Task store `planner` (`llm` or `keyword`) and `reasoning`.
+Not Cypher. The system prompt treats the report as untrusted data and allows at most one road unless the text explicitly names more than one. The user message is the report inside `<report>` tags plus up to eight candidates with names and distances. Accepted tools are `close_road`, `reopen_road`, `request_clarification`, and `reject`. Each requires `reason`. `noop` is treated as a clarification. One invalid call rejects the whole reply and the keyword planner runs. If several calls are returned, `reject` wins over a close. Scout closes a road only for `close_road` (a candidate, or the keyword planner's explicit id) or the keyword tool `close_nearest`. The Decision and the Task store `planner` (`llm` or `keyword`) and `reasoning`, and the Live card shows the reason.
 
-`GET /api/route` calls `route_to_shelter` and then builds the GeoJSON line and the turn steps in `navigation.py`.
+`GET /api/route?citizen=` calls `route_to_shelter` for that Citizen and then builds the GeoJSON line and the turn steps in `navigation.py`.

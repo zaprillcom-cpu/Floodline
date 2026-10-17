@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import { DesktopHud } from "@/components/DesktopHud";
 import { MobileShell } from "@/components/MobileShell";
 import { fetchNetworkGraph, fetchFeed, fetchOverlay, fetchRoute, fetchZones, fileReport, loadArea, reopenRoad, type AreaJob } from "@/lib/api";
+import { citizenId } from "@/lib/session";
 import { MapPrompt } from "@/components/MapPrompt";
 import { DISASTERS } from "@/lib/disasters";
 import { bundledCity, cityContains, type CitySlug } from "@/lib/cities";
@@ -125,7 +126,7 @@ export function EscapeApp() {
   ) {
     const previous = routeRef.current;
     const chosen = dest === undefined ? destRef.current : dest;
-    const plan = await fetchRoute(lat, lon, graph ?? graphRef.current, chosen);
+    const plan = await fetchRoute(lat, lon, graph ?? graphRef.current, chosen, citizenId());
     const nextCoords = plan.geojson.geometry.coordinates;
     const nextMetrics = lineMetrics(nextCoords);
     if (reason === "reroute" && previous) {
@@ -300,7 +301,12 @@ export function EscapeApp() {
     setError(null);
     try {
       const active = graphRef.current;
-      const state = await fileReport(text, active);
+      const hereNow = poseRef.current;
+      const state = await fileReport(text, active, {
+        lat: hereNow.lat,
+        lon: hereNow.lon,
+        citizen: citizenId(),
+      });
       const mapped: FeedEvent[] = (state.decisions || []).map((decision) => ({
         type: decision.kind === "route" ? "route" : "decision",
         id: decision.id,
@@ -316,6 +322,13 @@ export function EscapeApp() {
         reasoning: decision.reasoning,
       }));
       remember(mapped, false);
+      if (state.rejected || state.action === "duplicate") {
+        setNotice({
+          title: state.action === "duplicate" ? "Already reported" : state.action === "reject" ? "Not a road report" : "Need a place",
+          detail: state.message || "Nothing was closed.",
+        });
+        return;
+      }
       const nextOverlay = await fetchOverlay(active);
       setOverlay(nextOverlay);
       const here = poseRef.current;
@@ -323,7 +336,7 @@ export function EscapeApp() {
       const remainBefore = before
         ? before.eta_s * (1 - progressRef.current / Math.max(lineMetrics(before.geojson.geometry.coordinates).total, 1))
         : 0;
-      const plan = await fetchRoute(here.lat, here.lon, active);
+      const plan = await fetchRoute(here.lat, here.lon, active, null, citizenId());
       const nextCoords = plan.geojson.geometry.coordinates;
       const nextMetrics = lineMetrics(nextCoords);
       progressRef.current = snapProgress(nextCoords, nextMetrics.cum, here);

@@ -44,10 +44,12 @@ export function fetchRoute(
   lon: number,
   graph?: string | null,
   dest?: string | null,
+  citizen?: string | null,
 ): Promise<RoutePlan> {
   const query = new URLSearchParams({ lat: String(lat), lon: String(lon) });
   if (graph) query.set("graph", graph);
   if (dest) query.set("dest", dest);
+  if (citizen) query.set("citizen", citizen);
   return send<RoutePlan>(`/api/route?${query.toString()}`);
 }
 
@@ -63,10 +65,20 @@ export function fetchFeed(since: number, graph?: string | null): Promise<{ event
   return send(withGraph(`/api/feed?since=${since}`, graph));
 }
 
-export function fileReport(text: string, graph?: string | null): Promise<Snapshot> {
+export function fileReport(
+  text: string,
+  graph?: string | null,
+  extra?: { lat?: number; lon?: number; citizen?: string },
+): Promise<Snapshot> {
   return send<Snapshot>("/api/scenario/report", {
     method: "POST",
-    body: JSON.stringify({ text, graph: graph || undefined }),
+    body: JSON.stringify({
+      text,
+      graph: graph || undefined,
+      lat: extra?.lat,
+      lon: extra?.lon,
+      citizen: extra?.citizen || undefined,
+    }),
   });
 }
 

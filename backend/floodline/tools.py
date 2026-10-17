@@ -118,8 +118,8 @@ def close_road(graph, road_id: str, by: str = "Scout", at: str = T_CLOSE) -> dic
     return {"road_id": road_id, "name": name, "closed_edges": closed_edges, "at": at}
 
 
-def close_nearest_road(graph, lat: float, lon: float, by: str = "Scout", at: str = T_CLOSE) -> dict:
-    """Close the open road whose midpoint is closest to a reported point."""
+def nearest_open_road(graph, lat: float, lon: float) -> dict:
+    """The open road whose midpoint is closest to a reported point. Does not close it."""
     snapped = snap_to_road(graph, lat, lon)
     result = graph.query(
         """
@@ -145,10 +145,21 @@ def close_nearest_road(graph, lat: float, lon: float, by: str = "Scout", at: str
             best_name = name
     if best_id is None:
         raise LookupError("No open road to close")
-    closed = close_road(graph, best_id, by=by, at=at)
-    closed["snapped"] = snapped
-    closed["midpoint_m"] = int(best_dist)
-    closed["name"] = best_name
+    return {
+        "road_id": best_id,
+        "name": best_name,
+        "snapped": snapped,
+        "midpoint_m": int(best_dist),
+    }
+
+
+def close_nearest_road(graph, lat: float, lon: float, by: str = "Scout", at: str = T_CLOSE) -> dict:
+    """Close the open road whose midpoint is closest to a reported point."""
+    chosen = nearest_open_road(graph, lat, lon)
+    closed = close_road(graph, chosen["road_id"], by=by, at=at)
+    closed["snapped"] = chosen["snapped"]
+    closed["midpoint_m"] = chosen["midpoint_m"]
+    closed["name"] = chosen["name"]
     return closed
 
 
@@ -369,6 +380,8 @@ def write_reopen_decision(
     road_name: str,
     at: str,
     explanation: str,
+    planner: str = "",
+    reasoning: str = "",
 ) -> str:
     """Citizen marked a closed road clear. The Decision is what the SSE feed reads."""
     decision_id = _id("dec")
@@ -384,7 +397,9 @@ def write_reopen_decision(
           explanation: $explanation,
           result_summary: $summary,
           superseded: false,
-          road_id: $road_id
+          road_id: $road_id,
+          planner: $planner,
+          reasoning: $reasoning
         })
         """,
         {
@@ -394,6 +409,8 @@ def write_reopen_decision(
             "explanation": explanation,
             "summary": f"Reopened {road_name}",
             "road_id": road_id,
+            "planner": planner or "",
+            "reasoning": reasoning or "",
         },
     )
     graph.query(
@@ -406,7 +423,7 @@ def write_reopen_decision(
     return decision_id
 
 
-def create_report(graph, text: str, at: str, confidence: float = 0.9) -> str:
+def create_report(graph, text: str, at: str, confidence: float = 0.9, status: str = "open") -> str:
     report_id = _id("report")
     graph.query(
         """
@@ -415,12 +432,76 @@ def create_report(graph, text: str, at: str, confidence: float = 0.9) -> str:
           text: $text,
           received_at: $at,
           channel: 'citizen',
-          confidence: $confidence
+          confidence: $confidence,
+          status: $status
         })
         """,
-        {"id": report_id, "text": text, "at": at, "confidence": confidence},
+        {"id": report_id, "text": text, "at": at, "confidence": confidence, "status": status},
     )
     return report_id
+
+
+def link_duplicate(graph, report_id: str, prior_id: str) -> None:
+    if not report_id or not prior_id or report_id == prior_id:
+        return
+    graph.query(
+        """
+        MATCH (n:Report {id: $new}), (o:Report {id: $old})
+        MERGE (n)-[:DUPLICATE_OF]->(o)
+        """,
+        {"new": report_id, "old": prior_id},
+    )
+
+
+def write_notice_decision(
+    graph,
+    *,
+    report_id: str,
+    at: str,
+    kind: str,
+    summary: str,
+    explanation: str,
+    planner: str = "",
+    reasoning: str = "",
+) -> str:
+    """A reject or clarification. Nothing is closed, and the graph still shows why."""
+    decision_id = _id("dec")
+    seq = next_seq(graph)
+    graph.query(
+        """
+        CREATE (:Decision {
+          id: $id,
+          seq: $seq,
+          at: $at,
+          kind: $kind,
+          algo: 'none',
+          explanation: $explanation,
+          result_summary: $summary,
+          superseded: false,
+          planner: $planner,
+          reasoning: $reasoning
+        })
+        """,
+        {
+            "id": decision_id,
+            "seq": seq,
+            "at": at,
+            "kind": kind,
+            "explanation": explanation,
+            "summary": summary,
+            "planner": planner or "",
+            "reasoning": reasoning or "",
+        },
+    )
+    graph.query(
+        """
+        MATCH (a:Agent {name: 'Scout'}), (d:Decision {id: $id}), (r:Report {id: $report})
+        CREATE (a)-[:MADE]->(d)
+        CREATE (d)-[:BASED_ON]->(r)
+        """,
+        {"id": decision_id, "report": report_id},
+    )
+    return decision_id
 
 
 def create_task(graph, **fields) -> str:
@@ -535,10 +616,10 @@ def touch_heartbeat(graph, agent: str, now: str) -> None:
     )
 
 
-def finish_task(graph, task_id: str, status: str = "done") -> None:
+def finish_task(graph, task_id: str, status: str = "done", result: str = "") -> None:
     graph.query(
-        "MATCH (t:Task {id: $id}) SET t.status = $status",
-        {"id": task_id, "status": status},
+        "MATCH (t:Task {id: $id}) SET t.status = $status, t.result = $result",
+        {"id": task_id, "status": status, "result": result or ""},
     )
 
 

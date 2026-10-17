@@ -85,15 +85,15 @@ def _as_choice(place: dict, lat: float, lon: float) -> dict:
     }
 
 
-def _route_to_place(graph, lat: float, lon: float, place: dict) -> dict:
-    snapped = snap_point(graph, lat, lon)
+def _route_to_place(graph, lat: float, lon: float, place: dict, citizen_id: str | None = None) -> dict:
+    snapped = snap_point(graph, lat, lon, citizen_id=citizen_id)
     found = route(graph, int(snapped["osmid"]), int(place["osmid"]))
     hops = path_hops(graph, found.osmids)
     remember_route(graph, lat, lon, snapped, found, hops, {
         "kind": place["role"],
         "id": place["id"],
         "name": place["name"],
-    })
+    }, citizen_id=citizen_id or "citizen")
     return {
         "origin": snapped,
         "destination": {
@@ -121,6 +121,7 @@ def route_payload(
     lon: float,
     settings: Settings | None = None,
     dest_id: str | None = None,
+    citizen_id: str | None = None,
 ) -> dict:
     graph = get_graph(settings)
     if not _loaded(graph):
@@ -130,9 +131,9 @@ def route_payload(
     if dest_id and chosen_place is None:
         raise LookupError("That destination is not on this map")
     if chosen_place is not None:
-        raw = _route_to_place(graph, lat, lon, chosen_place)
+        raw = _route_to_place(graph, lat, lon, chosen_place, citizen_id=citizen_id)
     else:
-        raw = route_to_shelter(graph, lat, lon)
+        raw = route_to_shelter(graph, lat, lon, citizen_id=citizen_id or "citizen")
         subtype = ""
         for place in places:
             if str(place["id"]) == str(raw["destination"].get("id")):

@@ -57,6 +57,23 @@ def _complete(graph, task: dict, at: str, *, resumed: bool) -> dict:
         f"paths at or above 1e8 seconds are discarded as unreachable."
     )
     evidence = [item for item in (task["close_decision_id"], task["report_id"]) if item]
+    if previous and list(previous.get("osmids") or []) == [int(v) for v in found.osmids]:
+        finish_task(graph, task["id"], "done", result="unchanged")
+        return {
+            "claimed": True,
+            "resumed": resumed,
+            "unchanged": True,
+            "task_id": task["id"],
+            "decision_id": previous["id"],
+            "route": found.as_dict(),
+            "previous": previous,
+            "explanation": (
+                f"Unit {callsign} kept the same path. "
+                f"{task['road_name']} did not change the route. "
+                f"No new Decision was written."
+            ),
+            "evidence": explain(graph, previous["id"]),
+        }
     decision_id = write_route_decision(
         graph,
         found,

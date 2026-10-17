@@ -140,17 +140,36 @@ YIELD edges, edgeFlows, maxFlow
 RETURN maxFlow, edges, edgeFlows
 """
 
-# Name match is the geocoder. Distance is applied to these rows afterwards.
+# Name match is a prefilter. Python then requires a whole word, drops names that
+# are only an OSM highway type, and ranks by distance.
 GEOCODE_ROADS = """
 MATCH (a:Intersection)-[r:ROAD]->(b:Intersection)
-WHERE toLower(r.name) CONTAINS toLower($token)
+WHERE toLower(coalesce(r.name, '')) CONTAINS toLower($token)
 RETURN r.road_id AS road_id,
        r.name AS name,
        a.lat AS alat, a.lon AS alon, b.lat AS blat, b.lon AS blon,
        coalesce(a.district, '') AS adistrict,
        coalesce(b.district, '') AS bdistrict,
        coalesce(a.name, '') AS aname,
-       coalesce(b.name, '') AS bname
+       coalesce(b.name, '') AS bname,
+       coalesce(r.highway, '') AS highway,
+       coalesce(r.status, 'open') AS status
+"""
+
+LANDMARKS_BY_NAME = """
+MATCH (l:Landmark)-[:NEAR]->(i:Intersection)
+WHERE toLower(l.name) CONTAINS toLower($token)
+RETURN l.id AS id, l.name AS name, l.lat AS lat, l.lon AS lon, i.osmid AS osmid
+LIMIT 12
+"""
+
+ROADS_TOUCHING = """
+MATCH (i:Intersection {osmid: $osmid})-[r:ROAD]-(j:Intersection)
+RETURN DISTINCT r.road_id AS road_id,
+       r.name AS name,
+       i.lat AS alat, i.lon AS alon, j.lat AS blat, j.lon AS blon,
+       coalesce(r.highway, '') AS highway,
+       coalesce(r.status, 'open') AS status
 """
 
 TOP_SHELTERS_NEAR = """
