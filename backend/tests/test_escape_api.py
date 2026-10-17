@@ -8,7 +8,7 @@ from floodline.agents.llm_planner import plan_with_llm
 from floodline.agents.planner import plan
 from floodline.api import app
 from floodline.escape import _convex_hull, closure_kind
-from floodline.events import collect_events, decision_event, query_label
+from floodline.events import collect_events, decision_event, query_label, travel_delta
 from floodline.navigation import build_steps
 from floodline.stubs import geocode_report, reroute_affected, route_to_shelter, snap_point
 
@@ -109,9 +109,10 @@ def test_unnamed_edges_become_a_continue_step():
     ]
     steps = build_steps(hops)
     assert len(steps) == 1
-    assert steps[0]["instruction"] == "Continue 120 m"
+    assert steps[0]["name"] == "unnamed road"
+    assert "unnamed road" in steps[0]["instruction"]
+    assert "residential" not in steps[0]["instruction"]
     assert steps[0]["distance_m"] == 120
-    assert steps[0]["name"] == ""
 
 
 def test_a_bend_names_the_next_street():
@@ -139,6 +140,70 @@ def test_a_bend_names_the_next_street():
     assert steps[0]["instruction"] == "Head north on Carrer Major"
     assert steps[1]["instruction"] == "Turn right onto CV-36"
     assert steps[1]["from_m"] == 100
+
+
+def test_generic_hops_merge_into_the_neighbouring_named_step():
+    hops = [
+        {
+            "lat1": 39.43,
+            "lon1": -0.42,
+            "lat2": 39.431,
+            "lon2": -0.42,
+            "name": "Station Road",
+            "length_m": 100,
+            "road_id": "a",
+        },
+        {
+            "lat1": 39.431,
+            "lon1": -0.42,
+            "lat2": 39.4314,
+            "lon2": -0.42,
+            "name": "residential",
+            "length_m": 40,
+            "road_id": "b",
+        },
+        {
+            "lat1": 39.4314,
+            "lon1": -0.42,
+            "lat2": 39.4314,
+            "lon2": -0.4185,
+            "name": "Link Road",
+            "length_m": 80,
+            "road_id": "c",
+        },
+    ]
+    steps = build_steps(hops)
+    assert [step["name"] for step in steps] == ["Station Road", "Link Road"]
+    assert steps[0]["distance_m"] == 140
+    assert steps[1]["distance_m"] == 80
+    assert all("residential" not in step["instruction"] for step in steps)
+
+    leading = build_steps(
+        [
+            {
+                "lat1": 39.43,
+                "lon1": -0.42,
+                "lat2": 39.4304,
+                "lon2": -0.42,
+                "name": "service",
+                "length_m": 30,
+                "road_id": "s",
+            },
+            {
+                "lat1": 39.4304,
+                "lon1": -0.42,
+                "lat2": 39.431,
+                "lon2": -0.42,
+                "name": "Aarey Road",
+                "length_m": 70,
+                "road_id": "a",
+            },
+        ]
+    )
+    assert len(leading) == 1
+    assert leading[0]["name"] == "Aarey Road"
+    assert leading[0]["distance_m"] == 100
+    assert "service" not in leading[0]["instruction"]
 
 
 def test_llm_falls_back_without_a_key(monkeypatch):
@@ -218,6 +283,58 @@ def test_decision_event_names_the_cch_query():
     assert event["type"] == "decision"
     assert "db.idx.cch.query" in event["query"]
     assert "db.idx.cch.query" in query_label("cch", "route")
+    assert event["delta_s"] is None
+    assert event["duplicate_of"] is None
+
+
+def test_decision_event_delta_uses_superseded_travel_time():
+    assert travel_delta(132, 175, None) == 43
+    assert travel_delta(132, 175, 43) == 43
+    event = decision_event(
+        (
+            "dec-2",
+            3,
+            "t",
+            "citizen_route",
+            "cch",
+            "Previous ETA 132 s. New ETA 175 s. Delta +43 s.",
+            "Link Road (175s)",
+            175,
+            "aarey",
+            "Dispatcher",
+            "keyword",
+            "closed",
+            132,
+            175,
+            None,
+            None,
+        )
+    )
+    assert event["old_eta_s"] == 132
+    assert event["new_eta_s"] == 175
+    assert event["delta_s"] == 43
+    titled = decision_event(
+        (
+            "dec-3",
+            4,
+            "t",
+            "duplicate",
+            "none",
+            "already filed",
+            "Already closed Aarey Road",
+            None,
+            None,
+            "Scout",
+            "keyword",
+            "same road",
+            None,
+            None,
+            None,
+            "report-old",
+        )
+    )
+    assert titled["title"] == "Duplicate of earlier report — no new work"
+    assert titled["duplicate_of"] == "report-old"
 
 
 class _EmptyGraph:

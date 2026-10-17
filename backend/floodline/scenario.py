@@ -8,6 +8,7 @@ from floodline.agents.dispatcher import reroute
 from floodline.agents.scout import handle_report
 from floodline.config import T_CLOSE, T_ROUTE, Settings, utc_now
 from floodline.db import get_graph, rows
+from floodline.events import travel_delta
 from floodline.ingest import reset_and_load
 from floodline.network import DEMO_REPORT, UNIT_CALLSIGN, UNIT_OSMID, haversine_m
 from floodline.routing import route
@@ -374,6 +375,10 @@ def snapshot(settings: Settings | None = None) -> dict:
         agent,
         planner,
         reasoning,
+        old_eta_s,
+        new_eta_s,
+        delta_s,
+        duplicate_of,
     ) in rows(
         graph.query(
             """
@@ -382,7 +387,8 @@ def snapshot(settings: Settings | None = None) -> dict:
             OPTIONAL MATCH (a:Agent)-[:MADE]->(d)
             RETURN d.id, d.seq, d.at, d.kind, d.algo, d.explanation,
                    d.result_summary, d.superseded, d.travel_s, d.path_osmids,
-                   d.path_names, d.road_id, prev.id, a.name, d.planner, d.reasoning
+                   d.path_names, d.road_id, prev.id, a.name, d.planner, d.reasoning,
+                   d.old_eta_s, d.new_eta_s, d.delta_s, d.duplicate_of
             ORDER BY d.seq
             """
         )
@@ -405,6 +411,10 @@ def snapshot(settings: Settings | None = None) -> dict:
                 "agent": agent,
                 "planner": planner or "",
                 "reasoning": reasoning or "",
+                "old_eta_s": None if old_eta_s is None else int(old_eta_s),
+                "new_eta_s": None if new_eta_s is None else int(new_eta_s),
+                "delta_s": travel_delta(old_eta_s, new_eta_s, delta_s),
+                "duplicate_of": duplicate_of or None,
             }
         )
 

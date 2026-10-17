@@ -890,6 +890,50 @@ def remember_route(
     return citizen_id
 
 
+def _path_ids(raw) -> list[int]:
+    if raw is None or raw == "":
+        return []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+    try:
+        return [int(v) for v in raw]
+    except (TypeError, ValueError):
+        return []
+
+
+def _truthy(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().casefold() in {"1", "true", "yes"}
+    return bool(value)
+
+
+def _decision_travel(graph, decision_id, fallback: int) -> int:
+    """Travel time stored on a Decision, not the Citizen row.
+
+    ``remember_route`` writes the new ETA onto the citizen before a reroute
+    reads it. The Decision keeps the time of the path it was written for.
+    """
+    if not decision_id:
+        return int(fallback or 0)
+    found = rows(
+        graph.query(
+            "MATCH (d:Decision {id: $id}) RETURN d.travel_s",
+            {"id": decision_id},
+        )
+    )
+    if not found or found[0][0] is None:
+        return int(fallback or 0)
+    return int(found[0][0])
+
+
+def reroute_delta(old_travel_s: int, new_travel_s: int) -> int:
+    """Seconds added by the replacement route. Negative means the new path is faster."""
+    return int(new_travel_s) - int(old_travel_s)
+
+
 def _sync_citizen_decision(graph, *, citizen_id, found, destination, at, existing_id) -> str:
     names = " → ".join(collapse_names(found.names)) or destination.get("name") or "route"
     summary = f"{names} ({found.travel_s}s)"
@@ -897,28 +941,44 @@ def _sync_citizen_decision(graph, *, citizen_id, found, destination, at, existin
         f"Citizen routed to {destination.get('name')} in {found.travel_s} s "
         f"via {names}. Algorithm: {found.algo}."
     )
+    osmids = [int(v) for v in found.osmids]
     if existing_id:
-        graph.query(
-            """
-            MATCH (d:Decision {id: $id})
-            SET d.explanation = $explanation,
-                d.result_summary = $summary,
-                d.travel_s = $travel,
-                d.algo = $algo,
-                d.path_osmids = $osmids,
-                d.path_names = $names
-            """,
-            {
-                "id": existing_id,
-                "explanation": explanation,
-                "summary": summary,
-                "travel": int(found.travel_s),
-                "algo": found.algo,
-                "osmids": json.dumps([int(v) for v in found.osmids]),
-                "names": json.dumps(list(found.names)),
-            },
+        current = rows(
+            graph.query(
+                """
+                MATCH (d:Decision {id: $id})
+                RETURN d.path_osmids, d.superseded, d.travel_s
+                """,
+                {"id": existing_id},
+            )
         )
-        return existing_id
+        if current:
+            stored_path, superseded, _stored_travel = current[0]
+            # Same intersections: a GPS poll of the route already on this Decision.
+            # A different path must not overwrite result_summary or travel_s, or the
+            # Decision that SUPERSEDES marks later would show the new time as its own.
+            if _path_ids(stored_path) == osmids and not _truthy(superseded):
+                graph.query(
+                    """
+                    MATCH (d:Decision {id: $id})
+                    SET d.explanation = $explanation,
+                        d.result_summary = $summary,
+                        d.travel_s = $travel,
+                        d.algo = $algo,
+                        d.path_osmids = $osmids,
+                        d.path_names = $names
+                    """,
+                    {
+                        "id": existing_id,
+                        "explanation": explanation,
+                        "summary": summary,
+                        "travel": int(found.travel_s),
+                        "algo": found.algo,
+                        "osmids": json.dumps(osmids),
+                        "names": json.dumps(list(found.names)),
+                    },
+                )
+            return existing_id
     from floodline.tools import _id
 
     decision_id = _id("dec")
@@ -1099,7 +1159,7 @@ def reroute_affected(graph, road_id: str) -> dict:
             continue
         if not citizen_id or str(citizen_id) == LEGACY_CITIZEN:
             continue
-        old_eta = int(eta_s or 0)
+        old_eta = _decision_travel(graph, decision_id, int(eta_s or 0))
         try:
             fresh = route_to_shelter(
                 graph,
@@ -1112,6 +1172,7 @@ def reroute_affected(graph, road_id: str) -> dict:
             citizens.append({"id": citizen_id, "error": str(exc), "old_eta_s": old_eta})
             continue
         new_eta = int(fresh["eta_s"])
+        delta = reroute_delta(old_eta, new_eta)
         new_id = _write_reroute_decision(
             graph,
             citizen_id=str(citizen_id),
@@ -1135,6 +1196,7 @@ def reroute_affected(graph, road_id: str) -> dict:
                 "id": citizen_id,
                 "old_eta_s": old_eta,
                 "new_eta_s": new_eta,
+                "delta_s": delta,
                 "decision_id": new_id,
                 "shelter_id": fresh["destination"].get("id"),
             }
@@ -1165,12 +1227,14 @@ def _write_reroute_decision(
     seq = next_seq(graph)
     via = " → ".join(collapse_names(names)) or destination.get("name") or "route"
     reason = f"Active route used closed edge {road_name}"
+    delta = reroute_delta(old_eta, new_eta)
     explanation = (
         f"Citizen rerouted because {road_name} closed. {reason}. "
-        f"Previous ETA {old_eta} s. New ETA {new_eta} s via {via}. "
+        f"Previous ETA {int(old_eta)} s. New ETA {int(new_eta)} s. "
+        f"Delta {delta:+d} s via {via}. "
         f"Algorithm: {found_algo}."
     )
-    summary = f"{via} ({new_eta}s)"
+    summary = f"{via} ({int(new_eta)}s)"
     graph.query(
         """
         CREATE (:Decision {
@@ -1188,7 +1252,8 @@ def _write_reroute_decision(
           road_id: $road_id,
           reason: $reason,
           old_eta_s: $old_eta,
-          new_eta_s: $new_eta
+          new_eta_s: $new_eta,
+          delta_s: $delta
         })
         """,
         {
@@ -1205,6 +1270,7 @@ def _write_reroute_decision(
             "reason": reason,
             "old_eta": int(old_eta),
             "new_eta": int(new_eta),
+            "delta": int(delta),
         },
     )
     graph.query(

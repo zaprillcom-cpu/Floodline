@@ -19,7 +19,7 @@ import {
   type Pose,
 } from "@/lib/geo";
 import type { SavedPlace } from "@/lib/storage";
-import type { ClosedRoad, FeedEvent, Overlay, RoutePlan, TabId } from "@/lib/types";
+import type { ClosedRoad, FeedEvent, Overlay, RoutePlan, Snapshot, TabId } from "@/lib/types";
 
 import type { GraphNet } from "@/components/FloodMap";
 
@@ -29,6 +29,31 @@ type Notice = { title: string; detail: string } | null;
 
 function eventKey(event: FeedEvent): string {
   return `${event.type}:${event.id ?? event.title}:${event.seq}`;
+}
+
+function signedSeconds(delta: number): string {
+  const rounded = Math.round(delta);
+  const sign = rounded > 0 ? "+" : rounded < 0 ? "−" : "+";
+  return `${sign}${Math.abs(rounded)} s`;
+}
+
+function eventDelta(event: FeedEvent): number | null {
+  if (event.kind !== "citizen_route") return null;
+  if (typeof event.delta_s === "number" && Number.isFinite(event.delta_s)) return Math.round(event.delta_s);
+  if (typeof event.old_eta_s === "number" && typeof event.new_eta_s === "number") {
+    return Math.round(event.new_eta_s - event.old_eta_s);
+  }
+  return null;
+}
+
+function citizenDelta(state: Snapshot, id: string): number | null {
+  const mine = (state.citizen_reroute?.citizens ?? []).find((item) => item.id === id);
+  if (!mine || mine.error) return null;
+  if (typeof mine.delta_s === "number" && Number.isFinite(mine.delta_s)) return Math.round(mine.delta_s);
+  if (typeof mine.old_eta_s === "number" && typeof mine.new_eta_s === "number") {
+    return Math.round(mine.new_eta_s - mine.old_eta_s);
+  }
+  return null;
 }
 
 export function EscapeApp() {
@@ -59,8 +84,10 @@ export function EscapeApp() {
   const [promptClosure, setPromptClosure] = useState<ClosedRoad | null>(null);
   const [promptArea, setPromptArea] = useState<{ lat: number; lon: number; name: string } | null>(null);
   const [showGraph, setShowGraph] = useState(false);
+  const [focusId, setFocusId] = useState<string | null>(null);
   const [graphNet, setGraphNet] = useState<GraphNet | null>(null);
   const progressRef = useRef(0);
+  const deltaRef = useRef<number | null>(null);
   const poseRef = useRef(pose);
   const seen = useRef(new Set<string>());
   const liveAfter = useRef(0);
@@ -96,6 +123,17 @@ export function EscapeApp() {
       next.sort((a, b) => b.seq - a.seq || (a.type < b.type ? 1 : -1));
       return next.slice(0, 40);
     });
+    for (const event of incoming) {
+      const delta = eventDelta(event);
+      if (delta == null) continue;
+      deltaRef.current = delta;
+      if (live && armed.current) {
+        setNotice({
+          title: `Rerouted · ${signedSeconds(delta)}`,
+          detail: "A closed road dropped out of the FalkorDB path. The line is the new way out.",
+        });
+      }
+    }
     if (!live || !armed.current) return;
     const interesting = incoming.filter(
       (event) => event.seq > liveAfter.current && (event.type === "route" || event.kind === "close"),
@@ -111,6 +149,7 @@ export function EscapeApp() {
       seen.current = new Set();
       setEvents([]);
       setRoute(null);
+      deltaRef.current = null;
       armed.current = false;
     }
     graphRef.current = id;
@@ -130,15 +169,13 @@ export function EscapeApp() {
     const nextCoords = plan.geojson.geometry.coordinates;
     const nextMetrics = lineMetrics(nextCoords);
     if (reason === "reroute" && previous) {
-      const previousTotal = Math.max(lineMetrics(previous.geojson.geometry.coordinates).total, 1);
-      const remainBefore = previous.eta_s * (1 - progressRef.current / previousTotal);
       progressRef.current = snapProgress(nextCoords, nextMetrics.cum, poseRef.current);
-      const delta = Math.round(plan.eta_s - remainBefore);
-      const sign = delta >= 0 ? "+" : "−";
-      setNotice({
-        title: `Rerouted · ${sign}${Math.abs(delta)} s`,
-        detail: "A closed road dropped out of the FalkorDB path. The line is the new way out.",
-      });
+      if (deltaRef.current != null) {
+        setNotice({
+          title: `Rerouted · ${signedSeconds(deltaRef.current)}`,
+          detail: "A closed road dropped out of the FalkorDB path. The line is the new way out.",
+        });
+      }
     } else if (reason !== "reroute") {
       progressRef.current = 0;
       setProgress(0);
@@ -320,6 +357,11 @@ export function EscapeApp() {
         algo: decision.algo,
         planner: decision.planner,
         reasoning: decision.reasoning,
+        travel_s: decision.travel_s,
+        old_eta_s: decision.old_eta_s,
+        new_eta_s: decision.new_eta_s,
+        delta_s: decision.delta_s,
+        duplicate_of: decision.duplicate_of,
       }));
       remember(mapped, false);
       if (state.rejected || state.action === "duplicate") {
@@ -332,10 +374,6 @@ export function EscapeApp() {
       const nextOverlay = await fetchOverlay(active);
       setOverlay(nextOverlay);
       const here = poseRef.current;
-      const before = routeRef.current;
-      const remainBefore = before
-        ? before.eta_s * (1 - progressRef.current / Math.max(lineMetrics(before.geojson.geometry.coordinates).total, 1))
-        : 0;
       const plan = await fetchRoute(here.lat, here.lon, active, null, citizenId());
       const nextCoords = plan.geojson.geometry.coordinates;
       const nextMetrics = lineMetrics(nextCoords);
@@ -343,12 +381,20 @@ export function EscapeApp() {
       setRoute(plan);
       setProgress(progressRef.current);
       const closedName = nextOverlay.closed[0]?.name || "the road ahead";
-      const delta = Math.round(plan.eta_s - remainBefore);
-      const sign = delta > 0 ? "+" : delta < 0 ? "−" : "+";
-      setNotice({
-        title: `Rerouted · ${closedName}`,
-        detail: `${sign}${Math.abs(delta)} s. ${state.narrative?.closure || "The closed edge is out of the path."}`,
-      });
+      const delta = citizenDelta(state, citizenId());
+      const narrative = state.narrative?.closure || "The closed edge is out of the path.";
+      if (delta != null) {
+        deltaRef.current = delta;
+        setNotice({
+          title: `Rerouted · ${signedSeconds(delta)}`,
+          detail: `${closedName}. ${narrative}`,
+        });
+      } else {
+        setNotice({
+          title: `Rerouted · ${closedName}`,
+          detail: narrative,
+        });
+      }
       if (flood) {
         const shaded = await fetchZones(graphRef.current);
         setZones(shaded.zones);
@@ -614,6 +660,11 @@ export function EscapeApp() {
     graphId,
     showGraph,
     onShowGraph: () => setShowGraph((value) => !value),
+    focusId,
+    onOpenReport: (id: string) => {
+      setFocusId(id);
+      setTab("graph");
+    },
   };
 
   return (

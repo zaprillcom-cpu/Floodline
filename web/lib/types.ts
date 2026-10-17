@@ -67,6 +67,10 @@ export type FeedEvent = {
   algo?: string;
   planner?: string;
   reasoning?: string;
+  old_eta_s?: number | null;
+  new_eta_s?: number | null;
+  delta_s?: number | null;
+  duplicate_of?: string | null;
 };
 
 export type Pin = {
@@ -194,7 +198,23 @@ export type Snapshot = {
     superseded: boolean;
     planner?: string;
     reasoning?: string;
+    travel_s?: number | null;
+    old_eta_s?: number | null;
+    new_eta_s?: number | null;
+    delta_s?: number | null;
+    duplicate_of?: string | null;
   }>;
+  citizen_reroute?: {
+    road_id?: string;
+    citizens?: Array<{
+      id: string;
+      old_eta_s?: number;
+      new_eta_s?: number;
+      delta_s?: number;
+      decision_id?: string;
+      error?: string;
+    }>;
+  };
   narrative?: { closure: string | null; route: string | null };
   load?: { cch?: { ok?: boolean; error?: string }; routers?: { chosen?: string } };
 };

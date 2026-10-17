@@ -56,12 +56,17 @@ type Props = {
 
 export function DesktopHud(props: Props) {
   const [tab, setTab] = useState<TabId>("escape");
+  const [focusId, setFocusId] = useState<string | null>(null);
   useEffect(() => {
     if (props.chooser > 0) setTab("escape");
   }, [props.chooser]);
   useEffect(() => {
     if (props.reportFocus > 0) setTab("report");
   }, [props.reportFocus]);
+  function openReport(id: string) {
+    setFocusId(id);
+    setTab("graph");
+  }
   return (
     <aside className="hud" aria-label="Floodline">
       <header className="brand">
@@ -116,9 +121,16 @@ export function DesktopHud(props: Props) {
             onAhead={props.onAhead}
           />
         )}
-        {tab === "live" && <AgentFeed events={props.events} />}
+        {tab === "live" && <AgentFeed events={props.events} onOpenReport={openReport} />}
         {tab === "graph" && (
-          <GraphPanel graphId={props.graphId} events={props.events} showMap={props.showGraph} onShowMap={props.onShowGraph} height={380} />
+          <GraphPanel
+            graphId={props.graphId}
+            events={props.events}
+            showMap={props.showGraph}
+            onShowMap={props.onShowGraph}
+            height={380}
+            focusId={focusId}
+          />
         )}
         {tab === "me" && (
           <MePanel
