@@ -258,7 +258,7 @@ def citizen_route(
     graph: str | None = Query(default=None),
     dest: str | None = Query(default=None, max_length=80),
 ) -> dict:
-    """GeoJSON line, turn steps, and ETA. Shelter choice is the Sahil stub."""
+    """GeoJSON line, turn steps, and ETA. Shelter choice is route_to_shelter."""
     cfg = _settings_for(graph)
     return _guard(lambda: route_payload(lat, lon, cfg, dest_id=dest))
 
@@ -271,7 +271,7 @@ def escape_overlay(graph: str | None = Query(default=None)) -> dict:
 
 @app.get("/api/escape/zones")
 def escape_zones(graph: str | None = Query(default=None)) -> dict:
-    """Flood-vision shades. WCC-to-shelter is the Sahil stub."""
+    """Cut-off shades from shelter_reachability (algo.WCC on PASSABLE)."""
     cfg = _settings_for(graph)
     return _guard(lambda: cutoff_zones(get_graph(cfg)))
 

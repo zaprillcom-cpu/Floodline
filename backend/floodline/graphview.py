@@ -14,6 +14,7 @@ import json
 from floodline import cypher
 from floodline.db import rows
 from floodline.events import query_label
+from floodline.navigation import dedupe_route_title
 
 MEMORY_LABELS = ["Report", "Decision", "Task", "Agent", "Unit", "Shelter", "Hospital", "Citizen", "Incident"]
 # Memory edges among those labels. Intersection-facing edges (USED_EDGE, ACCESS, AT, NEAR) are left out:
@@ -23,7 +24,7 @@ MEMORY_RELS = ["MADE", "CLAIMED", "BASED_ON", "SUPERSEDES", "AFFECTS", "HANDOFF"
 _DECISIONS_Q = """
 MATCH (d:Decision)
 RETURN d.id, d.seq, d.kind, d.algo, d.at, d.result_summary, d.explanation,
-       d.superseded, d.travel_s, d.road_id
+       d.superseded, d.travel_s, d.road_id, d.planner, d.reasoning
 ORDER BY coalesce(d.seq, 0) DESC
 LIMIT $limit
 """
@@ -61,13 +62,13 @@ def _clean(props: dict) -> dict:
 def memory_graph(graph, limit: int = 60) -> dict:
     """Nodes and edges for the newest ``limit`` Decisions and Tasks plus their neighbours."""
     nodes: dict[str, dict] = {}
-    for did, seq, kind, algo, at, summary, explanation, superseded, travel_s, road_id in rows(
+    for did, seq, kind, algo, at, summary, explanation, superseded, travel_s, road_id, planner, reasoning in rows(
         graph.query(_DECISIONS_Q, {"limit": int(limit)})
     ):
         nodes[str(did)] = {
             "id": str(did),
             "label": "Decision",
-            "title": summary or kind or "Decision",
+            "title": dedupe_route_title(summary or kind or "Decision"),
             "seq": int(seq or 0),
             "props": _clean(
                 {
@@ -78,6 +79,8 @@ def memory_graph(graph, limit: int = 60) -> dict:
                     "superseded": bool(superseded),
                     "travel_s": travel_s,
                     "road_id": road_id,
+                    "planner": planner,
+                    "reasoning": reasoning,
                 }
             ),
             "cypher": query_label(algo, kind),

@@ -8,13 +8,14 @@ from __future__ import annotations
 import json
 
 from floodline.db import rows
+from floodline.navigation import dedupe_route_title
 
 _DECISIONS = """
 MATCH (d:Decision)
 WHERE coalesce(d.seq, 0) > $since
 OPTIONAL MATCH (a:Agent)-[:MADE]->(d)
 RETURN d.id, d.seq, d.at, d.kind, d.algo, d.explanation, d.result_summary,
-       d.travel_s, d.road_id, a.name
+       d.travel_s, d.road_id, a.name, d.planner, d.reasoning
 ORDER BY d.seq
 """
 
@@ -22,7 +23,8 @@ _TASKS = """
 MATCH (t:Task)
 WHERE coalesce(t.seq, 0) > $since
 OPTIONAL MATCH (a:Agent)-[:CLAIMED]->(t)
-RETURN t.id, t.seq, t.kind, t.status, t.road_id, t.road_name, t.created_at, a.name
+RETURN t.id, t.seq, t.kind, t.status, t.road_id, t.road_name, t.created_at, a.name,
+       t.planner, t.reasoning
 ORDER BY t.seq
 """
 
@@ -46,6 +48,10 @@ def query_label(algo: str | None, kind: str | None) -> str:
         return _QUERY_BY_ALGO["cch"]
     if kind in ("ingest_report", "reassess"):
         return "MATCH (t:Task {status:'open'}) SET t.status = 'claimed'  // HANDOFF"
+    if kind == "assess":
+        return "algo.WCC on PASSABLE; algo.maxFlow on ROAD.capacity"
+    if kind == "citizen_route":
+        return _QUERY_BY_ALGO["cch"]
     return ""
 
 
@@ -54,13 +60,18 @@ def _agent(name: str | None, kind: str | None) -> str:
         return str(name)
     if kind in ("close", "reopen", "ingest_report"):
         return "Scout"
-    if kind in ("route", "reassess"):
+    if kind in ("route", "reassess", "citizen_route"):
         return "Dispatcher"
+    if kind == "assess":
+        return "Analyst"
     return "Analyst"
 
 
 def decision_event(row: tuple) -> dict:
-    decision_id, seq, at, kind, algo, explanation, summary, travel_s, road_id, agent = row
+    row = tuple(row)
+    decision_id, seq, at, kind, algo, explanation, summary, travel_s, road_id, agent = row[:10]
+    planner = row[10] if len(row) > 10 else ""
+    reasoning = row[11] if len(row) > 11 else ""
     kind_s = str(kind or "")
     return {
         "type": "decision",
@@ -70,11 +81,13 @@ def decision_event(row: tuple) -> dict:
         "agent": _agent(agent, kind_s),
         "kind": kind_s,
         "algo": algo or "",
-        "title": summary or kind_s or "Decision",
+        "title": dedupe_route_title(summary or kind_s or "Decision"),
         "body": explanation or "",
         "query": query_label(algo, kind_s),
         "travel_s": None if travel_s is None else int(travel_s),
         "road_id": road_id or None,
+        "planner": planner or "",
+        "reasoning": reasoning or "",
     }
 
 
@@ -87,7 +100,10 @@ def route_event(decision: dict) -> dict:
 
 
 def task_event(row: tuple) -> dict:
-    task_id, seq, kind, status, road_id, road_name, created_at, agent = row
+    row = tuple(row)
+    task_id, seq, kind, status, road_id, road_name, created_at, agent = row[:8]
+    planner = row[8] if len(row) > 8 else ""
+    reasoning = row[9] if len(row) > 9 else ""
     kind_s = str(kind or "")
     label = road_name or road_id or ""
     return {
@@ -104,6 +120,8 @@ def task_event(row: tuple) -> dict:
         "query": query_label(None, kind_s),
         "travel_s": None,
         "road_id": road_id or None,
+        "planner": planner or "",
+        "reasoning": reasoning or "",
     }
 
 

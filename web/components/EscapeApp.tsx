@@ -306,12 +306,14 @@ export function EscapeApp() {
         id: decision.id,
         seq: decision.seq ?? 0,
         at: decision.at,
-        agent: decision.agent || (decision.kind === "close" ? "Scout" : decision.kind === "route" ? "Dispatcher" : "Analyst"),
+        agent: decision.agent || (decision.kind === "close" ? "Scout" : decision.kind === "route" || decision.kind === "citizen_route" ? "Dispatcher" : "Analyst"),
         kind: decision.kind,
         title: decision.summary || decision.kind,
         body: decision.explanation,
         query: decision.algo || "",
         algo: decision.algo,
+        planner: decision.planner,
+        reasoning: decision.reasoning,
       }));
       remember(mapped, false);
       const nextOverlay = await fetchOverlay(active);

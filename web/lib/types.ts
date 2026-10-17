@@ -37,9 +37,6 @@ export type Alternative = {
 
 export type RoutePlan = {
   ok: boolean;
-  stub?: string;
-  owner?: string;
-  fallback?: string;
   algo: string;
   eta_s: number;
   origin: { osmid: number; name: string; lat: number; lon: number; dist_m?: number };
@@ -68,6 +65,8 @@ export type FeedEvent = {
   travel_s?: number | null;
   road_id?: string | null;
   algo?: string;
+  planner?: string;
+  reasoning?: string;
 };
 
 export type Pin = {
@@ -107,9 +106,7 @@ export type Overlay = {
 };
 
 export type ZonePayload = {
-  stub?: string;
-  owner?: string;
-  fallback?: string;
+  algo?: string;
   zones: Array<{ name: string; population?: number; polygon: [number, number][] }>;
 };
 
@@ -192,6 +189,8 @@ export type Snapshot = {
     explanation: string;
     summary: string;
     superseded: boolean;
+    planner?: string;
+    reasoning?: string;
   }>;
   narrative?: { closure: string | null; route: string | null };
   load?: { cch?: { ok?: boolean; error?: string }; routers?: { chosen?: string } };

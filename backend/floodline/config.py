@@ -47,9 +47,17 @@ class Settings:
 UNREACHABLE_WEIGHT = 100_000_000
 CLOSED_TRAVEL_S = 1_000_000_000
 
-# Reconstructed clock for the Valencia slice. Not the real DANA timeline.
+# Reconstructed clock for the scripted Valencia replay only.
+# Citizen reports, area loads, and the live feed use utc_now().
 T_ROUTE = "2024-10-29T14:01:00Z"
 T_CLOSE = "2024-10-29T14:02:00Z"
+
+
+def utc_now() -> str:
+    """UTC timestamp for live Task and Decision nodes."""
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 # A* heuristic is haversine metres. travel_s is seconds.
 # 1/33.3 ≈ seconds per metre at 120 km/h, which keeps the heuristic admissible.

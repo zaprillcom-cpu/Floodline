@@ -18,7 +18,7 @@ import sys
 from collections import Counter
 
 from floodline.bulk import attach_facilities, load_records
-from floodline.config import Settings, T_CLOSE
+from floodline.config import Settings, T_CLOSE, utc_now
 from floodline.db import connect, falkordb_version, get_graph, rows, wait_for_db
 from floodline.osm_network import (
     BBOX,
@@ -140,11 +140,23 @@ def load_osm_graph(settings: Settings, *, refresh: bool = False) -> dict:
     graph = db.select_graph(settings.graph)
     loaded = load_records(graph, prepared)
     attach_facilities(graph, snaps)
-    for name, role in (("Scout", "closures"), ("Dispatcher", "routing")):
+    now = utc_now()
+    for name, role in (("Scout", "closures"), ("Dispatcher", "routing"), ("Analyst", "connectivity")):
         graph.query(
-            "CREATE (:Agent {name: $name, role: $role, heartbeat_at: $at})",
-            {"name": name, "role": role, "at": T_CLOSE},
+            """
+            MERGE (a:Agent {name: $name})
+            SET a.role = $role, a.heartbeat_at = $at
+            """,
+            {"name": name, "role": role, "at": now},
         )
+    try:
+        from floodline.analysis import assess_loaded_area
+        from floodline.stubs import ensure_shelter_citizen_model
+
+        ensure_shelter_citizen_model(graph)
+        assess_loaded_area(graph, at=now)
+    except Exception:
+        pass
     by_kind = {}
     for snap in snaps:
         by_kind.setdefault(snap["spec"].kind, []).append(snap)

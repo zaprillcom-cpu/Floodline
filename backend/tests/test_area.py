@@ -424,7 +424,7 @@ class _Graph:
         return _Result([])
 
 
-def test_osm_candidates_go_through_the_shelter_stub_not_a_near_model():
+def test_osm_candidates_are_stored_as_near_edges():
     graph = _Graph()
     candidates = [
         {
@@ -438,16 +438,12 @@ def test_osm_candidates_go_through_the_shelter_stub_not_a_near_model():
         }
     ]
     result = ensure_shelter_citizen_model(graph, candidates)
-    assert result["written"] is False
-    assert result["stub"] == "ensure_shelter_citizen_model"
-    assert result["owner"] == "Sahil"
+    assert result["written"] is True
     assert result["candidates"] == 1
     writes = [query for query in graph.queries if "MERGE" in query or "CREATE" in query]
     assert writes
-    assert all("NEAR" not in query for query in writes)
-    assert any("ACCESS" in query for query in writes)
-    assert "candidates" in (route_to_shelter.__doc__ or "")
-    assert "TODO(Sahil)" in (route_to_shelter.__doc__ or "")
+    assert any("NEAR" in query for query in writes)
+    assert "TODO(Sahil)" not in (route_to_shelter.__doc__ or "")
 
 
 def test_overpass_tries_every_mirror_and_sends_a_user_agent(monkeypatch):

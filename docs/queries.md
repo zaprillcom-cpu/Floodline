@@ -233,7 +233,7 @@ RETURN d.explanation AS explanation, d.algo AS algo, prev.id AS previous_id,
        a.name AS agent, collect(DISTINCT evidence.id) AS evidence_ids
 ```
 
-The narrator in this slice returns that explanation unchanged. A later slice can hand the same payload to a model.
+`explain` returns that stored explanation. The response field `narrator` is `stored`. The model does not rewrite it.
 
 ## Valencia OSM bulk load
 
@@ -292,13 +292,18 @@ RETURN DISTINCT r.road_id AS road_id, r.name AS name
 
 ## Evacuation capacity (`algo.maxFlow`)
 
-Sources are the district's intersections. Sinks are shelter intersections. Capacity is `ROAD.capacity` (0 after a closure).
+Sources are the district's intersections, minus the shelter intersections so the two sets stay disjoint. Sinks are open shelters reached by `ACCESS` or `NEAR` that still have free capacity. Edge capacity is `ROAD.capacity` (0 after a closure).
 
 ```cypher
 MATCH (d:District {name: $district})<-[:IN_DISTRICT]-(src:Intersection)
 WITH collect(src) AS sources
-MATCH (:Shelter)-[:ACCESS]->(sink:Intersection)
+MATCH (s:Shelter)-[rel]->(sink:Intersection)
+WHERE type(rel) IN ['ACCESS', 'NEAR']
+  AND coalesce(s.open, true) = true
+  AND (s.capacity IS NULL OR s.occupancy IS NULL OR s.occupancy < s.capacity)
 WITH sources, collect(DISTINCT sink) AS targets
+WITH [n IN sources WHERE NOT n.osmid IN [t IN targets | t.osmid]] AS sources, targets
+WHERE size(sources) > 0 AND size(targets) > 0
 CALL algo.maxFlow({
   sourceNodes: sources,
   targetNodes: targets,
@@ -309,30 +314,86 @@ YIELD edges, edgeFlows, maxFlow
 RETURN maxFlow, edges, edgeFlows
 ```
 
-On the synthetic network this is 1200 veh/h before the corridor closure and 0 after. The critical edge is the saturated edge with the largest flow: V-31 Paiporta bridge, 600 of capacity 600.
+On the synthetic network this is 1200 veh/h before the corridor closure and 0 after. The critical edge is the saturated edge with the largest flow: V-31 Paiporta bridge, 600 of capacity 600. The same query runs for every District on a loaded city tile.
 
-## Planned queries — OWNER: Sahil (not implemented)
+## Citizen escape queries
 
-These are the citizen-escape queries. The Cypher is Sahil's. The names below are the Python stubs that currently fall back to the existing router, the keyword planner, or `cut_off_areas`. Do not treat this section as a query that already runs.
+These run. FalkorDB does the lookup, the path, and the connectivity. Python only ranks a short candidate list and writes the Decision. Cursor wrote this Cypher at Sahil's direction; Sahil reviews it.
 
-| Question | Stub | Fallback that runs today |
-|---|---|---|
-| Snap a point to the nearest `Intersection`, and write `(:Citizen)-[:AT]->` | `snap_point` | `tools.snap_to_road` |
-| Nearest *open* `Shelter` by route cost: snap, top-k `NEAR`, then CCH | `route_to_shelter` | `routing.route` (CCH, else A*, else SPpaths) to existing `Shelter-ACCESS`, else `best_hospital` |
-| Close the `ROAD` edges a `Report` names | `geocode_report` | keyword `plan` (`close_road` / `close_nearest` / `noop`). `edges` stays empty |
-| Which citizens' active routes use a closed edge, then rewrite the route and a `Decision` (`reason`, old ETA, new ETA, closed edge) with `(:Decision)-[:REROUTED]->(:Citizen)` | `reroute_affected` | returns no citizens. The ambulance `Dispatcher.reroute` still runs |
-| Which areas cannot reach an open shelter, via WCC | `shelter_reachability` | `analysis.cut_off_areas` (WCC on `PASSABLE` toward hospitals) |
-| Free-text report → tool calls `geocode`, `close_road`, `severity`, schema-validated | `plan_with_llm` | `agents.planner.plan` |
-| Create `(:Shelter)-[:NEAR]->(:Intersection)`, Citizen, `(:Report)-[:CLOSES]`, and the indexes | `ensure_shelter_citizen_model` | read-only counts. Writes nothing |
+### Snap (`snap_point`)
 
-Model Sahil adds, on top of the labels already loaded:
-
-```
-(:Shelter {id,name,capacity,occupancy,open,lat,lon})-[:NEAR {dist_m}]->(:Intersection)
-(:Citizen {id,lat,lon,updated_at})-[:AT]->(:Intersection)
-(:Report)-[:CLOSES]->(the ROAD edges it closes)
-(:Task)-[:FOR]->(:Report)
-(:Decision)-[:REROUTED]->(:Citizen)
+```cypher
+WITH point({latitude: $lat, longitude: $lon}) AS p
+MATCH (i:Intersection)
+WHERE i.loc IS NOT NULL AND distance(i.loc, p) < $radius_m
+RETURN i.osmid AS osmid, i.name AS name, distance(i.loc, p) AS dist_m
+ORDER BY dist_m ASC
+LIMIT 1
 ```
 
-`GET /api/route` calls `route_to_shelter` and then builds the GeoJSON line and the turn steps in `navigation.py`. Replacing the stub body is enough for the map to start using the real shelter query. The step text and the SSE feed do not need to change.
+If `loc` is missing, Python scans `Intersection.lat/lon` with haversine. Passing a citizen id replaces `(:Citizen)-[:AT]->(:Intersection)`.
+
+### Geocode (`geocode_report`)
+
+Road codes such as `CV-36` are the primary token. The query is `toLower(r.name) CONTAINS toLower($token)`. A landmark after "near", "at", or "by" only breaks ties, together with distance from the reported point. "CV-36 flooded near Paiporta" closes CV-36.
+
+### Shelter model (`ensure_shelter_citizen_model`)
+
+Idempotent indexes: `Shelter(id)`, `Citizen(id)`, `Report(id)`, `Intersection(osmid)`, `Intersection(loc)`. If no `NEAR` edges exist yet, existing `Shelter-ACCESS` edges are copied:
+
+```cypher
+MATCH (s:Shelter)-[a:ACCESS]->(i:Intersection)
+MERGE (s)-[n:NEAR]->(i)
+SET n.dist_m = coalesce(n.dist_m, a.dist_m, 0),
+    s.open = coalesce(s.open, true)
+```
+
+New candidates `MERGE` the Shelter and both `NEAR` and `ACCESS`.
+
+### Route to shelter (`route_to_shelter`)
+
+```cypher
+MATCH (s:Shelter)-[n:NEAR]->(i:Intersection)
+RETURN s.id, s.name, s.open, s.capacity, s.occupancy, i.osmid, n.dist_m
+ORDER BY n.dist_m ASC
+LIMIT $k
+```
+
+Python keeps the first five that are open and not full, then calls `routing.route` (CCH, else A*, else SPpaths) and keeps the lowest `travel_s`. The active Citizen is `MERGE`d. Old `AT` and `ROUTED_TO` edges are deleted and rewritten:
+
+```cypher
+UNWIND $hops AS hop
+MATCH (c:Citizen {id: $id}), (i:Intersection {osmid: hop.osmid})
+CREATE (c)-[:ROUTED_TO {seq: hop.seq, road_id: hop.road_id}]->(i)
+```
+
+A repeated GPS poll updates the existing `citizen_route` Decision in place so the feed does not grow a new card every few seconds.
+
+### Reroute (`reroute_affected`)
+
+```cypher
+MATCH (c:Citizen)-[r:ROUTED_TO]->()
+WHERE r.road_id = $road_id AND coalesce(c.active, true) = true
+RETURN DISTINCT c.id, c.lat, c.lon, c.eta_s, c.decision_id
+```
+
+Each match is routed again with `record_decision=False`, so the new Decision does not supersede itself. The new Decision `SUPERSEDES` the old one, `BASED_ON` the Report, and both `AFFECTS` and `REROUTED` the Citizen. It stores `reason`, `old_eta_s`, and `new_eta_s`.
+
+### Shelter reachability (`shelter_reachability`)
+
+```cypher
+CALL algo.WCC({
+  nodeLabels: ['Intersection'],
+  relationshipTypes: ['PASSABLE']
+})
+YIELD node, componentId
+RETURN node.osmid AS osmid, componentId
+```
+
+Open shelters contribute their component ids. A District is `cut_off` when none of its intersections share one of those components. A mixed district also returns the isolated pocket (`osmids`, name `"{district} isolated"`) so the map can shade it.
+
+### Planner (`plan_with_llm`)
+
+Not Cypher. The model receives the report plus the geocoded candidate roads and nearby `NEAR` shelters. Accepted tools are `geocode`, `close_road`, and `severity` (`low|medium|high|critical`). One invalid call rejects the whole reply and the keyword planner runs. The close Decision and the Task store `planner` (`llm` or `keyword`) and `reasoning`.
+
+`GET /api/route` calls `route_to_shelter` and then builds the GeoJSON line and the turn steps in `navigation.py`.

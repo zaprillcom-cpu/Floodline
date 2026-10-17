@@ -11,6 +11,9 @@ CREATE_HOSPITAL_INDEX = "CREATE INDEX FOR (h:Hospital) ON (h.id)"
 CREATE_TASK_INDEX = "CREATE INDEX FOR (t:Task) ON (t.status)"
 CREATE_DECISION_INDEX = "CREATE INDEX FOR (d:Decision) ON (d.id)"
 CREATE_ROAD_STATUS_INDEX = "CREATE INDEX FOR ()-[r:ROAD]-() ON (r.status)"
+CREATE_SHELTER_INDEX = "CREATE INDEX FOR (s:Shelter) ON (s.id)"
+CREATE_CITIZEN_INDEX = "CREATE INDEX FOR (c:Citizen) ON (c.id)"
+CREATE_REPORT_INDEX = "CREATE INDEX FOR (r:Report) ON (r.id)"
 
 CREATE_CCH = "CREATE CCH INDEX FOR ()-[e:ROAD]->() ON (e.travel_s)"
 
@@ -120,8 +123,13 @@ RETURN node.osmid AS osmid, componentId
 MAX_FLOW = """
 MATCH (d:District {name: $district})<-[:IN_DISTRICT]-(src:Intersection)
 WITH collect(src) AS sources
-MATCH (:Shelter)-[:ACCESS]->(sink:Intersection)
+MATCH (s:Shelter)-[rel]->(sink:Intersection)
+WHERE type(rel) IN ['ACCESS', 'NEAR']
+  AND coalesce(s.open, true) = true
+  AND (s.capacity IS NULL OR s.occupancy IS NULL OR s.occupancy < s.capacity)
 WITH sources, collect(DISTINCT sink) AS targets
+WITH [n IN sources WHERE NOT n.osmid IN [t IN targets | t.osmid]] AS sources, targets
+WHERE size(sources) > 0 AND size(targets) > 0
 CALL algo.maxFlow({
   sourceNodes: sources,
   targetNodes: targets,
@@ -130,6 +138,43 @@ CALL algo.maxFlow({
 })
 YIELD edges, edgeFlows, maxFlow
 RETURN maxFlow, edges, edgeFlows
+"""
+
+# Name match is the geocoder. Distance is applied to these rows afterwards.
+GEOCODE_ROADS = """
+MATCH (a:Intersection)-[r:ROAD]->(b:Intersection)
+WHERE toLower(r.name) CONTAINS toLower($token)
+RETURN r.road_id AS road_id,
+       r.name AS name,
+       a.lat AS alat, a.lon AS alon, b.lat AS blat, b.lon AS blon,
+       coalesce(a.district, '') AS adistrict,
+       coalesce(b.district, '') AS bdistrict,
+       coalesce(a.name, '') AS aname,
+       coalesce(b.name, '') AS bname
+"""
+
+TOP_SHELTERS_NEAR = """
+MATCH (s:Shelter)-[n:NEAR]->(i:Intersection)
+RETURN s.id AS id, s.name AS name, s.capacity AS capacity, s.occupancy AS occupancy,
+       s.lat AS slat, s.lon AS slon, s.kind AS kind, s.open AS open,
+       i.osmid AS osmid, i.lat AS ilat, i.lon AS ilon, n.dist_m AS dist_m
+ORDER BY n.dist_m ASC
+LIMIT $k
+"""
+
+CITIZENS_ON_ROAD = """
+MATCH (c:Citizen)-[r:ROUTED_TO]->()
+WHERE r.road_id = $road_id AND coalesce(c.active, true) = true
+RETURN DISTINCT c.id AS id, c.lat AS lat, c.lon AS lon, c.eta_s AS eta_s, c.decision_id AS decision_id
+"""
+
+BACKFILL_NEAR = """
+MATCH (s:Shelter)-[a:ACCESS]->(i:Intersection)
+MERGE (s)-[n:NEAR]->(i)
+SET n.dist_m = coalesce(n.dist_m, a.dist_m, 0),
+    s.open = coalesce(s.open, true),
+    s.lat = coalesce(s.lat, i.lat),
+    s.lon = coalesce(s.lon, i.lon)
 """
 
 DISTRICT_EXITS = """

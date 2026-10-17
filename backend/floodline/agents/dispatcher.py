@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from floodline.config import T_CLOSE
+from floodline.navigation import collapse_names
 from floodline.routing import route
 from floodline.tools import (
     active_route_decision,
@@ -40,7 +41,7 @@ def _complete(graph, task: dict, at: str, *, resumed: bool) -> dict:
     delta = ""
     if previous:
         before_text = (
-            f"{_fmt(previous['travel_s'])} via {' → '.join(previous['names'])}"
+            f"{_fmt(previous['travel_s'])} via {' → '.join(collapse_names(previous['names']))}"
         )
         delta = f" Delta {found.travel_s - previous['travel_s']:+d} s."
     origin = "resumed from the claimed task in the graph" if resumed else "claimed the reassess task"
@@ -49,7 +50,7 @@ def _complete(graph, task: dict, at: str, *, resumed: bool) -> dict:
         f"{task['road_name']} closed at {at}. "
         f"Dispatcher {origin}. "
         f"Previous ETA {before_text}. "
-        f"New ETA {_fmt(found.travel_s)} via {' → '.join(found.names)}."
+        f"New ETA {_fmt(found.travel_s)} via {' → '.join(collapse_names(found.names))}."
         f"{delta} "
         f"Algorithm: {_algo_label(found.algo)}. "
         f"The closed segment stays in the graph with travel_s = 1e9; "
