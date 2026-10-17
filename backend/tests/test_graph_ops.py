@@ -27,6 +27,14 @@ def test_route_titles_drop_repeated_road_names():
     assert dedupe_route_title("Aarey Road → Aarey Road → Link Road (42s)") == "Aarey Road → Link Road (42s)"
 
 
+def test_generic_highway_names_drop_out_of_titles():
+    assert collapse_names(["Aarey Road", "residential", "Aarey Road"]) == ["Aarey Road"]
+    assert collapse_names(["Station Road", "unclassified", "Link Road"]) == ["Station Road", "Link Road"]
+    assert collapse_names(["residential", "service", "living_street"]) == ["unnamed road"]
+    assert dedupe_route_title("Aarey Road → residential → Link Road (175s)") == "Aarey Road → Link Road (175s)"
+    assert dedupe_route_title("residential → service (12s)") == "unnamed road (12s)"
+
+
 def _db_up() -> bool:
     sock = socket.socket()
     sock.settimeout(1)
@@ -144,14 +152,20 @@ def test_reroute_writes_a_decision_that_supersedes_and_affects_the_citizen():
             OPTIONAL MATCH (d)-[:BASED_ON]->(rep:Report)
             OPTIONAL MATCH (d)-[:AFFECTS]->(c:Citizen)
             OPTIONAL MATCH (d)-[:REROUTED]->(c2:Citizen)
-            RETURN d.old_eta_s, d.new_eta_s, d.road_id, prev.id, rep.id, c.id, c2.id
+            RETURN d.old_eta_s, d.new_eta_s, d.delta_s, d.road_id, prev.id, prev.travel_s,
+                   prev.result_summary, rep.id, c.id, c2.id
             """,
             {"id": decision_id},
         )
     )
-    old_eta, new_eta, road_id, previous, report, citizen, rerouted = links[0]
+    old_eta, new_eta, delta_s, road_id, previous, previous_travel, previous_summary, report, citizen, rerouted = links[0]
     assert road_id == "cami-poyo"
     assert int(new_eta) >= int(old_eta)
+    assert int(delta_s) == int(new_eta) - int(old_eta)
+    assert int(previous_travel) == int(old_eta)
+    assert f"({int(old_eta)}s)" in (previous_summary or "")
+    if int(new_eta) != int(old_eta):
+        assert f"({int(new_eta)}s)" not in (previous_summary or "")
     assert previous
     assert report == report_id
     assert citizen == "evalcitizen0001"
@@ -298,3 +312,111 @@ def _load_mini(graph) -> None:
         """
     )
     ensure_cch(graph)
+
+
+class _Rows:
+    def __init__(self, result_set):
+        self.result_set = result_set
+
+
+def test_sync_keeps_the_old_decision_title_when_the_path_changes():
+    from types import SimpleNamespace
+
+    from floodline.stubs import _sync_citizen_decision
+
+    class Graph:
+        def __init__(self, row):
+            self.row = row
+            self.writes = []
+
+        def query(self, text, params=None):
+            self.writes.append(text)
+            if "RETURN d.path_osmids" in text:
+                return _Rows([self.row])
+            return _Rows([])
+
+    changed = Graph(('["1", "2", "3"]', False, 132))
+    found = SimpleNamespace(names=["Link Road"], travel_s=175, algo="cch", osmids=[9, 8, 7])
+    kept = _sync_citizen_decision(
+        changed,
+        citizen_id="c1",
+        found=found,
+        destination={"name": "Hall"},
+        at="t",
+        existing_id="dec-132",
+    )
+    assert kept == "dec-132"
+    assert not any("SET d.explanation" in text for text in changed.writes)
+
+    superseded = Graph(("[1, 2, 3]", True, 132))
+    same = SimpleNamespace(names=["Aarey Road"], travel_s=175, algo="cch", osmids=[1, 2, 3])
+    _sync_citizen_decision(
+        superseded,
+        citizen_id="c1",
+        found=same,
+        destination={"name": "Hall"},
+        at="t",
+        existing_id="dec-132",
+    )
+    assert not any("SET d.explanation" in text for text in superseded.writes)
+
+    fresh = Graph(("[1, 2, 3]", False, 132))
+    _sync_citizen_decision(
+        fresh,
+        citizen_id="c1",
+        found=same,
+        destination={"name": "Hall"},
+        at="t",
+        existing_id="dec-132",
+    )
+    assert any("d.result_summary = $summary" in text for text in fresh.writes)
+
+
+def test_reroute_decision_payload_stores_delta_from_132_to_175():
+    from floodline.stubs import _decision_travel, _write_reroute_decision, reroute_delta
+
+    assert reroute_delta(132, 175) == 43
+
+    class Graph:
+        def __init__(self, travel):
+            self.travel = travel
+
+        def query(self, text, params=None):
+            if "RETURN d.travel_s" in text:
+                return _Rows([(self.travel,)])
+            return _Rows([])
+
+    assert _decision_travel(Graph(132), "dec-old", 175) == 132
+    assert _decision_travel(Graph(None), "dec-old", 175) == 175
+
+    class Writer:
+        def __init__(self):
+            self.params = []
+
+        def query(self, text, params=None):
+            self.params.append(params or {})
+            if "RETURN m.seq" in text:
+                return _Rows([(4,)])
+            return _Rows([])
+
+    writer = Writer()
+    _write_reroute_decision(
+        writer,
+        citizen_id="c1",
+        road_id="aarey",
+        road_name="Aarey Road",
+        old_eta=132,
+        new_eta=175,
+        found_algo="cch",
+        names=["Link Road"],
+        osmids=[1, 2],
+        previous_id="dec-132",
+        report_id="report-1",
+        destination={"name": "Hall"},
+    )
+    created = next(params for params in writer.params if params.get("delta") == 43)
+    assert created["old_eta"] == 132
+    assert created["new_eta"] == 175
+    assert "Delta +43 s" in created["explanation"]
+    assert "(175s)" in created["summary"]
+    assert not any("prev.result_summary" in text for params in writer.params for text in (str(params),))

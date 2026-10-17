@@ -135,18 +135,21 @@ def _duplicate(graph, text: str, call, at: str, edge: dict, prior_id: str | None
         link_duplicate(graph, report_id, prior_id)
     reason = call.reasoning or call.rationale or "This road is already closed."
     name = edge.get("name") or edge["road_id"]
+    prior = prior_id or ""
     decision_id = write_notice_decision(
         graph,
         report_id=report_id,
         at=at,
         kind="duplicate",
-        summary=f"Already closed {name}",
+        summary="Duplicate of earlier report — no new work",
         explanation=(
-            f"Scout did not close {name} again. The report is linked to the earlier one. "
+            f"Scout did not close {name} again. "
+            f"This report duplicates {prior or 'an earlier report'} and opens no new work. "
             f"Planner: {call.planner}. {reason}"
         ),
         planner=call.planner,
         reasoning=reason,
+        duplicate_of=prior,
     )
     return {
         "action": "duplicate",

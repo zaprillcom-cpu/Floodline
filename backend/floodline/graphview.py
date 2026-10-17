@@ -35,7 +35,7 @@ MEMORY_RELS = [
 _DECISIONS_Q = """
 MATCH (d:Decision)
 RETURN d.id, d.seq, d.kind, d.algo, d.at, d.result_summary, d.explanation,
-       d.superseded, d.travel_s, d.road_id, d.planner, d.reasoning
+       d.superseded, d.travel_s, d.road_id, d.planner, d.reasoning, d.duplicate_of
 ORDER BY coalesce(d.seq, 0) DESC
 LIMIT $limit
 """
@@ -73,7 +73,7 @@ def _clean(props: dict) -> dict:
 def memory_graph(graph, limit: int = 60) -> dict:
     """Nodes and edges for the newest ``limit`` Decisions and Tasks plus their neighbours."""
     nodes: dict[str, dict] = {}
-    for did, seq, kind, algo, at, summary, explanation, superseded, travel_s, road_id, planner, reasoning in rows(
+    for did, seq, kind, algo, at, summary, explanation, superseded, travel_s, road_id, planner, reasoning, duplicate_of in rows(
         graph.query(_DECISIONS_Q, {"limit": int(limit)})
     ):
         nodes[str(did)] = {
@@ -92,6 +92,7 @@ def memory_graph(graph, limit: int = 60) -> dict:
                     "road_id": road_id,
                     "planner": planner,
                     "reasoning": reasoning,
+                    "duplicate_of": duplicate_of,
                 }
             ),
             "cypher": query_label(algo, kind),

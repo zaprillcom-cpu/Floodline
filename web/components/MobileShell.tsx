@@ -55,6 +55,8 @@ type Props = {
   graphId: string | null;
   showGraph: boolean;
   onShowGraph: () => void;
+  onOpenReport: (reportId: string) => void;
+  focusId: string | null;
 };
 
 export function MobileShell(props: Props) {
@@ -102,9 +104,16 @@ export function MobileShell(props: Props) {
             onAhead={props.onAhead}
           />
         )}
-        {props.tab === "live" && <AgentFeed events={props.events} />}
+        {props.tab === "live" && <AgentFeed events={props.events} onOpenReport={props.onOpenReport} />}
         {props.tab === "graph" && (
-          <GraphPanel graphId={props.graphId} events={props.events} showMap={props.showGraph} onShowMap={props.onShowGraph} height={300} />
+          <GraphPanel
+            graphId={props.graphId}
+            events={props.events}
+            showMap={props.showGraph}
+            onShowMap={props.onShowGraph}
+            height={300}
+            focusId={props.focusId}
+          />
         )}
         {props.tab === "me" && (
           <MePanel

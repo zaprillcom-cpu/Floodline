@@ -234,9 +234,15 @@ def test_duplicate_report_does_not_close_again(monkeypatch):
     monkeypatch.setattr("floodline.agents.scout._road_status", lambda g, road: "closed")
     monkeypatch.setattr("floodline.agents.scout._prior_report", lambda g, road: "report-old")
     linked = {}
+    noticed = {}
     monkeypatch.setattr("floodline.agents.scout.link_duplicate", lambda g, new, old: linked.update(new=new, old=old))
     monkeypatch.setattr("floodline.agents.scout.create_report", lambda *a, **k: "report-new")
-    monkeypatch.setattr("floodline.agents.scout.write_notice_decision", lambda *a, **k: "dec-dup")
+
+    def notice(*_a, **kwargs):
+        noticed.update(kwargs)
+        return "dec-dup"
+
+    monkeypatch.setattr("floodline.agents.scout.write_notice_decision", notice)
     closed = []
     monkeypatch.setattr("floodline.agents.scout.close_road", lambda *a, **k: closed.append(1))
     result = handle_report(object(), "Aarey Road flooded again")
@@ -244,6 +250,9 @@ def test_duplicate_report_does_not_close_again(monkeypatch):
     assert result["duplicate_of"] == "report-old"
     assert linked == {"new": "report-new", "old": "report-old"}
     assert closed == []
+    assert noticed["summary"] == "Duplicate of earlier report — no new work"
+    assert noticed["duplicate_of"] == "report-old"
+    assert noticed["kind"] == "duplicate"
 
 
 def test_reopen_uses_the_geocoded_road(monkeypatch):

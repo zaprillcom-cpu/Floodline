@@ -35,9 +35,10 @@ type Props = {
   showMap: boolean;
   onShowMap: () => void;
   height?: number;
+  focusId?: string | null;
 };
 
-export function GraphPanel({ graphId, events, showMap, onShowMap, height = 340 }: Props) {
+export function GraphPanel({ graphId, events, showMap, onShowMap, height = 340, focusId = null }: Props) {
   const [data, setData] = useState<MemoryGraph | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [picked, setPicked] = useState<MemoryNode | null>(null);
@@ -62,6 +63,12 @@ export function GraphPanel({ graphId, events, showMap, onShowMap, height = 340 }
       live = false;
     };
   }, [graphId, top]);
+
+  useEffect(() => {
+    if (!focusId || !data) return;
+    const node = data.nodes.find((item) => item.id === focusId);
+    if (node) setPicked(node);
+  }, [focusId, data]);
 
   const sim = useMemo(() => {
     if (!data) return null;
@@ -102,10 +109,16 @@ export function GraphPanel({ graphId, events, showMap, onShowMap, height = 340 }
         const a = link.source as SimNode;
         const b = link.target as SimNode;
         if (a.x == null || b.x == null) continue;
-        ctx.strokeStyle =
-          link.type === "SUPERSEDES" ? "rgba(255,159,10,0.85)" : link.type === "BASED_ON" ? "rgba(255,159,10,0.5)" : "rgba(255,255,255,0.16)";
-        ctx.lineWidth = link.type === "SUPERSEDES" ? 1.8 : 1;
-        ctx.setLineDash(link.derived ? [3, 3] : []);
+        const duplicate = link.type === "DUPLICATE_OF";
+        ctx.strokeStyle = duplicate
+          ? "rgba(100,210,255,0.95)"
+          : link.type === "SUPERSEDES"
+            ? "rgba(255,159,10,0.85)"
+            : link.type === "BASED_ON"
+              ? "rgba(255,159,10,0.5)"
+              : "rgba(255,255,255,0.16)";
+        ctx.lineWidth = duplicate ? 2.4 : link.type === "SUPERSEDES" ? 1.8 : 1;
+        ctx.setLineDash(duplicate || link.derived ? [5, 4] : []);
         ctx.beginPath();
         ctx.moveTo(a.x, a.y!);
         ctx.lineTo(b.x, b.y!);
@@ -170,8 +183,8 @@ export function GraphPanel({ graphId, events, showMap, onShowMap, height = 340 }
       <p className="kicker">Graph</p>
       <h2 className="display tight">Agent memory</h2>
       <p className="lede">
-        The Report, Task, and Decision nodes the agents wrote to FalkorDB, with MADE, CLAIMED, BASED_ON, and SUPERSEDES
-        edges. Updates with the live feed. Tap a node.
+        The Report, Task, and Decision nodes the agents wrote to FalkorDB, with MADE, CLAIMED, BASED_ON, SUPERSEDES,
+        and DUPLICATE_OF edges. A duplicate report draws a cyan dashed line to the original. Tap a node.
       </p>
       <button type="button" className={`graph-toggle${showMap ? " on" : ""}`} onClick={onShowMap}>
         {showMap ? "Hide road graph on map" : "Show road graph on map"}
@@ -191,7 +204,7 @@ export function GraphPanel({ graphId, events, showMap, onShowMap, height = 340 }
         ))}
       </div>
       {picked && (
-        <div className="card graph-detail">
+        <div className="card graph-detail" id={picked.label === "Report" ? `report-${picked.id}` : undefined}>
           <div className="card-top">
             <span className="agent analyst">{picked.label}</span>
             <span className="when">{picked.id}</span>

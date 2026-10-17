@@ -1,8 +1,8 @@
 """Turn-by-turn steps from a path's edge names and bearings.
 
 This is presentation on top of an existing route. It does not choose the path.
-Street names are shown only when the edge actually has one; otherwise the step
-says "continue" plus a distance.
+OSM highway classes stored as names are not street names: they fold into the
+neighbouring named step, or the step says "unnamed road" when nothing is named.
 """
 
 from __future__ import annotations
@@ -64,9 +64,21 @@ def _delta(a: float, b: float) -> float:
     return (b - a + 540.0) % 360.0 - 180.0
 
 
+def _norm_label(name: str | None) -> str:
+    return " ".join((name or "").strip().casefold().replace("_", " ").replace("-", " ").split())
+
+
+_GENERIC_NORM = {_norm_label(item) for item in _GENERIC}
+
+
+def is_generic_name(name: str | None) -> bool:
+    """True for blank labels and OSM highway classes used in place of a name."""
+    return _norm_label(name) in _GENERIC_NORM
+
+
 def street_name(name: str | None) -> str:
     text = (name or "").strip()
-    if text.lower() in _GENERIC:
+    if is_generic_name(text):
         return ""
     return text
 
@@ -128,6 +140,8 @@ def build_steps(hops: list[dict]) -> list[dict]:
             }
         )
 
+    groups = _absorb_unnamed(groups)
+
     steps = []
     cursor = 0
     prev = None
@@ -148,6 +162,44 @@ def build_steps(hops: list[dict]) -> list[dict]:
         cursor += group["distance_m"]
         prev = group["end_bearing"]
     return steps
+
+
+def _absorb(into: dict, extra: dict) -> None:
+    into["distance_m"] += extra["distance_m"]
+    into["road_ids"].extend(extra["road_ids"])
+
+
+def _absorb_unnamed(groups: list[dict]) -> list[dict]:
+    """Fold highway-type hops into the neighbouring named step.
+
+    A leading unnamed stretch joins the next named street. Later ones stay
+    with the previous named street. A route with no real name is one step.
+    """
+    if not groups:
+        return []
+    if not any(group["name"] for group in groups):
+        only = {
+            "name": "unnamed road",
+            "bearing": groups[0]["bearing"],
+            "end_bearing": groups[-1]["end_bearing"],
+            "distance_m": sum(group["distance_m"] for group in groups),
+            "road_ids": [road_id for group in groups for road_id in group["road_ids"]],
+        }
+        return [only]
+    folded: list[dict] = []
+    for group in groups:
+        if not group["name"]:
+            if folded:
+                _absorb(folded[-1], group)
+            else:
+                folded.append(group)
+            continue
+        if folded and not folded[0]["name"] and len(folded) == 1:
+            _absorb(group, folded[0])
+            folded = [group]
+            continue
+        folded.append(group)
+    return folded
 
 
 def path_hops(graph, osmids: list[int]) -> list[dict]:
@@ -224,19 +276,27 @@ def path_hops(graph, osmids: list[int]) -> list[dict]:
 
 
 def collapse_names(names: list[str]) -> list[str]:
-    """Drop blank labels and repeated consecutive street names.
+    """Drop blank labels, highway-type stand-ins, and repeated street names.
 
     OSM paths name every intersection after the same road, so a title built
-    from the raw node list reads "Aarey Road → Aarey Road".
+    from the raw node list reads "Aarey Road → Aarey Road". A class such as
+    "residential" is not a name: it disappears between real streets, and a
+    route made only of those classes is titled "unnamed road".
     """
     collapsed: list[str] = []
+    saw_generic = False
     for name in names:
         text = str(name or "").strip()
         if not text:
             continue
+        if is_generic_name(text):
+            saw_generic = True
+            continue
         if collapsed and collapsed[-1].casefold() == text.casefold():
             continue
         collapsed.append(text)
+    if not collapsed and saw_generic:
+        return ["unnamed road"]
     return collapsed
 
 

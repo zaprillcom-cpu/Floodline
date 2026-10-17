@@ -15,7 +15,8 @@ MATCH (d:Decision)
 WHERE coalesce(d.seq, 0) > $since
 OPTIONAL MATCH (a:Agent)-[:MADE]->(d)
 RETURN d.id, d.seq, d.at, d.kind, d.algo, d.explanation, d.result_summary,
-       d.travel_s, d.road_id, a.name, d.planner, d.reasoning
+       d.travel_s, d.road_id, a.name, d.planner, d.reasoning,
+       d.old_eta_s, d.new_eta_s, d.delta_s, d.duplicate_of
 ORDER BY d.seq
 """
 
@@ -67,12 +68,36 @@ def _agent(name: str | None, kind: str | None) -> str:
     return "Analyst"
 
 
+def _optional_int(value):
+    if value is None or value == "":
+        return None
+    return int(value)
+
+
+def travel_delta(old, new, stored=None):
+    """Replacement travel_s minus the superseded route's travel_s."""
+    if stored is not None and stored != "":
+        return int(stored)
+    old_s = _optional_int(old)
+    new_s = _optional_int(new)
+    if old_s is None or new_s is None:
+        return None
+    return new_s - old_s
+
+
 def decision_event(row: tuple) -> dict:
     row = tuple(row)
     decision_id, seq, at, kind, algo, explanation, summary, travel_s, road_id, agent = row[:10]
     planner = row[10] if len(row) > 10 else ""
     reasoning = row[11] if len(row) > 11 else ""
+    old_eta = row[12] if len(row) > 12 else None
+    new_eta = row[13] if len(row) > 13 else None
+    delta = row[14] if len(row) > 14 else None
+    duplicate_of = row[15] if len(row) > 15 else None
     kind_s = str(kind or "")
+    title = dedupe_route_title(summary or kind_s or "Decision")
+    if kind_s == "duplicate":
+        title = "Duplicate of earlier report — no new work"
     return {
         "type": "decision",
         "id": decision_id,
@@ -81,13 +106,17 @@ def decision_event(row: tuple) -> dict:
         "agent": _agent(agent, kind_s),
         "kind": kind_s,
         "algo": algo or "",
-        "title": dedupe_route_title(summary or kind_s or "Decision"),
+        "title": title,
         "body": explanation or "",
         "query": query_label(algo, kind_s),
         "travel_s": None if travel_s is None else int(travel_s),
         "road_id": road_id or None,
         "planner": planner or "",
         "reasoning": reasoning or "",
+        "old_eta_s": _optional_int(old_eta),
+        "new_eta_s": _optional_int(new_eta),
+        "delta_s": travel_delta(old_eta, new_eta, delta),
+        "duplicate_of": duplicate_of or None,
     }
 
 

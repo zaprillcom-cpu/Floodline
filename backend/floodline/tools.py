@@ -288,6 +288,27 @@ def write_route_decision(
             "names": json.dumps(found.names),
         },
     )
+    if previous_id:
+        previous_travel = rows(
+            graph.query(
+                "MATCH (prev:Decision {id: $id}) RETURN prev.travel_s",
+                {"id": previous_id},
+            )
+        )
+        if previous_travel and previous_travel[0][0] is not None:
+            old_eta = int(previous_travel[0][0])
+            graph.query(
+                """
+                MATCH (d:Decision {id: $id})
+                SET d.old_eta_s = $old, d.new_eta_s = $new, d.delta_s = $delta
+                """,
+                {
+                    "id": decision_id,
+                    "old": old_eta,
+                    "new": int(found.travel_s),
+                    "delta": int(found.travel_s) - old_eta,
+                },
+            )
     graph.query(
         """
         MATCH (a:Agent {name: $agent}), (d:Decision {id: $id})
@@ -463,6 +484,7 @@ def write_notice_decision(
     explanation: str,
     planner: str = "",
     reasoning: str = "",
+    duplicate_of: str = "",
 ) -> str:
     """A reject or clarification. Nothing is closed, and the graph still shows why."""
     decision_id = _id("dec")
@@ -501,6 +523,11 @@ def write_notice_decision(
         """,
         {"id": decision_id, "report": report_id},
     )
+    if duplicate_of:
+        graph.query(
+            "MATCH (d:Decision {id: $id}) SET d.duplicate_of = $prior",
+            {"id": decision_id, "prior": duplicate_of},
+        )
     return decision_id
 
 

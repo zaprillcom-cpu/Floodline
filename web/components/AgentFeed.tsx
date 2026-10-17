@@ -12,6 +12,39 @@ function formatWhen(at?: string): string {
   }).format(date);
 }
 
+const GENERIC_ROAD = new Set([
+  "",
+  "unnamed road",
+  "road",
+  "residential",
+  "service",
+  "unclassified",
+  "living street",
+  "living_street",
+  "tertiary",
+  "tertiary link",
+  "tertiary_link",
+  "secondary",
+  "secondary link",
+  "secondary_link",
+  "primary",
+  "primary link",
+  "primary_link",
+  "trunk",
+  "trunk link",
+  "trunk_link",
+  "motorway",
+  "motorway link",
+  "motorway_link",
+  "track",
+  "busway",
+]);
+
+export function genericRoadName(name: string): boolean {
+  const spaced = name.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+  return GENERIC_ROAD.has(spaced) || GENERIC_ROAD.has(spaced.replace(/ /g, "_"));
+}
+
 export function dedupeRouteTitle(title: string): string {
   const text = (title || "").trim();
   const arrow = text.includes("→") ? "→" : text.includes("->") ? "->" : "";
@@ -27,14 +60,24 @@ export function dedupeRouteTitle(title: string): string {
     }
   }
   const collapsed: string[] = [];
+  let sawGeneric = false;
   for (const part of body.split(arrow)) {
     const name = part.trim();
     if (!name) continue;
+    if (genericRoadName(name)) {
+      sawGeneric = true;
+      continue;
+    }
     if (collapsed.length && collapsed[collapsed.length - 1].toLowerCase() === name.toLowerCase()) continue;
     collapsed.push(name);
   }
-  if (collapsed.length === 0) return title || "";
+  if (collapsed.length === 0) return sawGeneric ? `unnamed road${suffix}` : title || "";
   return `${collapsed.join(` ${arrow} `)}${suffix}`;
+}
+
+export function cardTitle(event: FeedEvent): string {
+  if (event.kind === "duplicate") return "Duplicate of earlier report — no new work";
+  return dedupeRouteTitle(event.title);
 }
 
 function tone(agent: string): string {
@@ -45,7 +88,7 @@ function tone(agent: string): string {
   return "analyst";
 }
 
-export function AgentFeed({ events }: { events: FeedEvent[] }) {
+export function AgentFeed({ events, onOpenReport }: { events: FeedEvent[]; onOpenReport?: (reportId: string) => void }) {
   const visible = events.filter((event) => event.type !== "heartbeat" && event.type !== "route");
   return (
     <div className="stack">
@@ -65,7 +108,21 @@ export function AgentFeed({ events }: { events: FeedEvent[] }) {
                 {event.status ? ` ${event.status}` : ""}
               </span>
             </div>
-            <strong className="card-title">{dedupeRouteTitle(event.title)}</strong>
+            <strong className="card-title">{cardTitle(event)}</strong>
+            {event.kind === "duplicate" && event.duplicate_of && (
+              <p className="card-body">
+                <a
+                  className="report-link"
+                  href={`#report-${event.duplicate_of}`}
+                  onClick={(click) => {
+                    click.preventDefault();
+                    onOpenReport?.(event.duplicate_of || "");
+                  }}
+                >
+                  {event.duplicate_of}
+                </a>
+              </p>
+            )}
             {event.reasoning && <p className="card-body">Reasoning. {event.reasoning}</p>}
             {event.body && <p className="card-body">{event.body}</p>}
             {event.query && <pre className="query">{event.query}</pre>}
