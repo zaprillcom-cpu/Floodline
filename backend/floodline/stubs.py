@@ -17,14 +17,22 @@ from floodline.network import haversine_m
 from floodline.routing import NoRoute, route
 from floodline.tools import best_hospital, next_seq
 
-ACTIVE_CITIZEN = "citizen"
+# Retired shared node from before per-browser ids. Do not create it, and do not reroute it.
+LEGACY_CITIZEN = "citizen"
 TOP_K = 5
 
 _CODE = re.compile(r"\b([A-Za-z]{1,6}-\d{1,4}[A-Za-z]?)\b")
-_LANDMARK = re.compile(
-    r"\b(?:near|at|by)\s+([A-Za-z0-9][A-Za-z0-9'’.\-]*(?:\s+[A-Za-z0-9][A-Za-z0-9'’.\-]*){0,3})",
+_PLACE = re.compile(
+    r"\b(?:near|off|at|by)\s+([A-Za-z0-9][A-Za-z0-9'’.\-]*(?:\s+[A-Za-z0-9][A-Za-z0-9'’.\-]*){0,4})",
     re.IGNORECASE,
 )
+_ROADISH = re.compile(
+    r"\b(?:road|rd|marg|street|st|lane|highway|flyover|path)\b|\b(?:no\.?|number)\s*\.?\s*\d{1,3}\b",
+    re.IGNORECASE,
+)
+_ROAD_END = {"road", "rd", "marg", "street", "st", "lane", "highway", "flyover", "path"}
+_GENERIC = {"road", "rd", "marg", "street", "st", "lane", "path", "highway", "flyover", "no", "number", "the"}
+_CLIP_STOP = {"is", "was", "a", "an", "the", "and", "its", "it"}
 _NUMBERED = re.compile(r"\b(?:no\.?|number)\s*\.?\s*(\d{1,3})\b", re.IGNORECASE)
 _SHORT = re.compile(r"\b(SV|S\.V\.|MG|M\.G\.|WEH|GMLR|LBS|EEH|JVLR)\b", re.IGNORECASE)
 # Spoken abbreviations → the words OSM actually stores on the road name.
@@ -185,8 +193,31 @@ def road_name_matches(name: str, phrase: str, highway: str = "") -> bool:
     return False
 
 
+def _clip_phrase(phrase: str) -> str:
+    """Keep the place or street and drop the words that follow it."""
+    kept = []
+    for token in phrase.replace(",", " ").split():
+        cleaned = token.strip(".,")
+        norm = _norm_name(cleaned)
+        if not norm or norm in _CLIP_STOP:
+            break
+        # "flooded" ends the place. "road" and "no" are part of the street name.
+        if norm in _STOP and norm not in _ROAD_END and norm != "no":
+            break
+        kept.append(cleaned)
+        if norm in _ROAD_END and len(kept) > 1:
+            break
+        if any(_norm_name(item) in _ROAD_END for item in kept) and _NUMBERED.search(cleaned):
+            break
+    return " ".join(kept).strip(" .")
+
+
+def _sig_tokens(text: str) -> set[str]:
+    return set(_norm_name(text).split()) - _GENERIC
+
+
 def parse_report_place(text: str) -> dict:
-    """Pull road codes, short aliases, numbered roads, and a landmark from a report."""
+    """Pull road codes, short aliases, numbered roads, an anchor street, and a landmark."""
     raw = text or ""
     codes = []
     for match in _CODE.finditer(raw):
@@ -203,12 +234,16 @@ def parse_report_place(text: str) -> dict:
         label = f"no {int(match.group(1))}"
         if label not in numbered:
             numbered.append(label)
+    anchor = ""
     landmark = ""
-    found = _LANDMARK.search(raw)
+    found = _PLACE.search(raw)
     if found:
-        phrase = found.group(1).strip(" .")
-        if not _CODE.fullmatch(phrase):
-            landmark = phrase
+        phrase = _clip_phrase(found.group(1))
+        if phrase and not _CODE.fullmatch(phrase):
+            if _ROADISH.search(phrase):
+                anchor = phrase
+            else:
+                landmark = phrase
     aliases = []
     for token in [*codes, *shorts]:
         for alias in _ALIASES.get(token.lower().replace(" ", ""), []):
@@ -219,9 +254,15 @@ def parse_report_place(text: str) -> dict:
                 aliases.append(alias)
     # Drop the spans we already classified so "CV-36" does not also yield the word "cv".
     stripped = raw
-    for span in [*codes, *shorts]:
-        stripped = re.sub(rf"\b{re.escape(span)}\b", " ", stripped, flags=re.IGNORECASE)
+    for span in [*codes, *shorts, anchor]:
+        if span:
+            stripped = re.sub(rf"\b{re.escape(span)}\b", " ", stripped, flags=re.IGNORECASE)
     stripped = _NUMBERED.sub(" ", stripped)
+    skip = set()
+    if landmark:
+        skip.update(_norm_name(landmark).split())
+    if anchor:
+        skip.update(_norm_name(anchor).split())
     words = []
     for token in re.findall(r"[A-Za-z][A-Za-z'’]{2,}", stripped):
         lowered = token.strip(" .").lower()
@@ -229,11 +270,11 @@ def parse_report_place(text: str) -> dict:
             continue
         if lowered in {item.lower() for item in shorts}:
             continue
-        if landmark and lowered in landmark.lower().split():
+        if lowered in skip:
             continue
         if lowered not in words:
             words.append(lowered)
-    query = codes[0] if codes else (shorts[0] if shorts else (numbered[0] if numbered else (words[0] if words else landmark)))
+    query = codes[0] if codes else (shorts[0] if shorts else (numbered[0] if numbered else (words[0] if words else (anchor or landmark))))
     return {
         "codes": codes,
         "shorts": shorts,
@@ -241,32 +282,91 @@ def parse_report_place(text: str) -> dict:
         "numbered": numbered,
         "words": words,
         "landmark": landmark,
+        "anchor": anchor,
         "query": query,
     }
 
 
-def _search_phrases(parsed: dict) -> list[str]:
+def _anchor_numbers(anchor: str) -> set[str]:
+    found = set()
+    for match in _NUMBERED.finditer(anchor or ""):
+        found.add(f"no {int(match.group(1))}")
+    return found
+
+
+def _unique(items) -> list[str]:
     phrases: list[str] = []
-    for item in (
-        list(parsed.get("codes") or [])
-        + list(parsed.get("shorts") or [])
-        + list(parsed.get("aliases") or [])
-        + list(parsed.get("numbered") or [])
-        + list(parsed.get("words") or [])
-    ):
+    for item in items:
         text = str(item).strip()
         if text and text not in phrases:
             phrases.append(text)
-    # A landmark ("near Paiporta", "near Oberoi Mall") resolves through Landmark
-    # nodes, not by treating the place name as another road-name search. That
-    # search is only a fallback when the report names no road of its own.
-    road_specific = bool(
-        parsed.get("codes") or parsed.get("shorts") or parsed.get("numbered") or parsed.get("words")
+    return phrases
+
+
+def _primary_phrases(parsed: dict) -> list[str]:
+    """The road the report is about. A second street ('near Road No.4', 'off Station Road') is not included."""
+    anchor_nums = _anchor_numbers(parsed.get("anchor") or "")
+    numbered = [item for item in (parsed.get("numbered") or []) if item not in anchor_nums]
+    return _unique(
+        list(parsed.get("codes") or [])
+        + list(parsed.get("shorts") or [])
+        + list(parsed.get("aliases") or [])
+        + numbered
+        + list(parsed.get("words") or [])
     )
+
+
+def _anchor_phrases(parsed: dict) -> list[str]:
+    anchor = (parsed.get("anchor") or "").strip()
+    if not anchor:
+        return []
+    phrases = [anchor, *_anchor_numbers(anchor)]
+    for token in _SHORT.findall(anchor):
+        phrases.append(token)
+        phrases.extend(_ALIASES.get(_norm_name(token), []))
+    return _unique(phrases)
+
+
+def _search_phrases(parsed: dict) -> list[str]:
+    phrases = _unique(_primary_phrases(parsed) + _anchor_phrases(parsed))
+    # A landmark ("near Oberoi Mall") resolves through Landmark nodes. It is a
+    # road-name search only when the report names no road of its own.
+    road_specific = bool(_primary_phrases(parsed))
     landmark = (parsed.get("landmark") or "").strip()
     if landmark and not road_specific and landmark not in phrases:
         phrases.append(landmark)
     return phrases
+
+
+def _match_band(name: str, report: str, phrases: list[str]) -> int:
+    """3 exact full name, 2 every significant token, 1 partial, 0 none."""
+    if not phrases or not any(road_name_matches(name, phrase) for phrase in phrases):
+        return 0
+    if _phrase_in_name(report, name):
+        return 3
+    name_sig = _sig_tokens(name)
+    for phrase in phrases:
+        options = [_sig_tokens(phrase)]
+        options.extend(_sig_tokens(alias) for alias in _ALIASES.get(_norm_name(phrase), []))
+        if any(sig and sig == name_sig for sig in options):
+            return 2
+    return 1
+
+
+def _is_anchor_road(name: str, anchor_phrases: list[str], primary_band: int) -> bool:
+    """The cross street is context. Do not close it unless it is also the named road."""
+    if not anchor_phrases or primary_band >= 2:
+        return False
+    return any(road_name_matches(name, phrase) for phrase in anchor_phrases)
+
+
+def _better_segment(new: dict, old: dict) -> bool:
+    def key(item: dict):
+        anchor = item["anchor_m"] if item["anchor_m"] is not None else 10**12
+        reporter = item["dist_m"] if item["dist_m"] is not None else 10**12
+        return (-item["band"], anchor, reporter)
+
+    return key(new) < key(old)
 
 
 def _road_rows(graph, token: str) -> list[dict]:
@@ -292,20 +392,16 @@ def _road_rows(graph, token: str) -> list[dict]:
     return edges
 
 
-def _name_score(name: str, phrases: list[str]) -> int:
-    """Prefer the name the report actually said. Extra words (Flyover, Colony) lose when unmentioned."""
-    name_words = set(_norm_name(name).split()) - {"road", "rd", "marg", "street", "st"}
-    mentioned = set()
-    for phrase in phrases:
-        mentioned.update(_norm_name(phrase).split())
-    mentioned -= {"road", "rd", "marg", "street", "st", "no"}
-    if not name_words:
-        return 0
-    overlap = name_words & mentioned
-    if not overlap:
-        return 0
-    extra = name_words - mentioned
-    return 40 + 20 * len(overlap) - 15 * len(extra)
+def _endpoint_gap(edge: dict, points: list[tuple[float, float]]) -> float | None:
+    if not points:
+        return None
+    best = None
+    for lat, lon in ((edge["alat"], edge["alon"]), (edge["blat"], edge["blon"])):
+        for plat, plon in points:
+            gap = haversine_m(lat, lon, plat, plon)
+            if best is None or gap < best:
+                best = gap
+    return best
 
 
 def _rank_edges(
@@ -315,17 +411,36 @@ def _rank_edges(
     lon: float | None,
     landmark_points: list[dict] | None = None,
 ) -> list[dict]:
-    """One row per road_id. Distance to the reporter, then to a landmark, then the name."""
-    phrases = _search_phrases(parsed)
+    """One row per road name. Match quality first, then distance to the cross street, then to the reporter.
+
+    A second street in the report is an anchor. Segments of the named road that
+    meet that street come first, and the anchor street itself is not a candidate.
+    """
+    report = parsed.get("text") or ""
+    primary = _primary_phrases(parsed)
+    anchor_phrases = _anchor_phrases(parsed)
+    anchor_points = [
+        (latlon)
+        for edge in edges
+        if not _is_type_name(edge.get("name") or "", edge.get("highway") or "")
+        and any(road_name_matches(edge.get("name") or "", phrase) for phrase in anchor_phrases)
+        for latlon in ((edge["alat"], edge["alon"]), (edge["blat"], edge["blon"]))
+    ]
     grouped: dict[str, dict] = {}
+    saw_named = False
+    pending: list[dict] = []
     for edge in edges:
-        if _is_type_name(edge.get("name") or "", edge.get("highway") or ""):
+        name = edge.get("name") or ""
+        if _is_type_name(name, edge.get("highway") or ""):
             continue
-        matched = [phrase for phrase in phrases if road_name_matches(edge.get("name") or "", phrase, edge.get("highway") or "")]
+        band = _match_band(name, report, primary)
+        if _is_anchor_road(name, anchor_phrases, band):
+            continue
         near_landmark = bool(edge.get("near_landmark"))
-        if not matched and not near_landmark:
+        if band == 0 and not near_landmark:
             continue
-        score = _name_score(edge.get("name") or "", phrases) + (25 if near_landmark else 0)
+        if band > 0:
+            saw_named = True
         mid_lat = (edge["alat"] + edge["blat"]) / 2
         mid_lon = (edge["alon"] + edge["blon"]) / 2
         dist_m = None
@@ -338,24 +453,30 @@ def _rank_edges(
             gap = haversine_m(float(point["lat"]), float(point["lon"]), mid_lat, mid_lon)
             if landmark_m is None or gap < landmark_m:
                 landmark_m = gap
-        current = grouped.get(edge["road_id"])
-        if current is None or score > current["score"] or (
-            score == current["score"]
-            and dist_m is not None
-            and (current["dist_m"] is None or dist_m < current["dist_m"])
-        ):
-            grouped[edge["road_id"]] = {
-                "road_id": edge["road_id"],
-                "name": edge["name"],
-                "dist_m": None if dist_m is None else int(round(dist_m)),
-                "landmark_m": None if landmark_m is None else int(round(landmark_m)),
-                "score": score,
-                "status": edge.get("status") or "open",
-            }
+        anchor_gap = _endpoint_gap(edge, anchor_points)
+        row = {
+            "road_id": edge["road_id"],
+            "name": name or edge["road_id"],
+            "dist_m": None if dist_m is None else int(round(dist_m)),
+            "landmark_m": None if landmark_m is None else int(round(landmark_m)),
+            "anchor_m": None if anchor_gap is None else int(round(anchor_gap)),
+            "band": band,
+            "status": edge.get("status") or "open",
+        }
+        pending.append(row)
+    # A named road wins. Roads that only touch a landmark stay when nothing was named.
+    rows = [row for row in pending if row["band"] > 0 or not saw_named]
+    for row in rows:
+        key = _norm_name(row["name"]) or row["road_id"]
+        current = grouped.get(key)
+        if current is None or _better_segment(row, current):
+            grouped[key] = row
+
     def _order(item: dict):
-        place = item["landmark_m"] if item["landmark_m"] is not None else item["dist_m"]
+        anchor = item["anchor_m"] if item["anchor_m"] is not None else 10**12
+        place = item["landmark_m"] if item["band"] == 0 and item["landmark_m"] is not None else anchor
         reporter = item["dist_m"] if item["dist_m"] is not None else 10**12
-        return (place if place is not None else 10**12, reporter, -item["score"])
+        return (-item["band"], place, reporter)
 
     ranked = sorted(grouped.values(), key=_order)
     return ranked[:8]
@@ -563,11 +684,13 @@ def geocode_report(text: str, graph=None, lat: float | None = None, lon: float |
 
     Whole words only, so 'tree' does not match 'street'. Short names (SV, MG)
     and numbered roads (No.6) are kept. Unnamed ways whose name is the highway
-    type are skipped. Candidates are ranked by distance to the reporter and to
-    a matched Landmark. Without a graph the parsed tokens are returned and
-    ``edges`` stays empty.
+    type are skipped. Candidates are ranked by how well the name matches, then
+    by distance to a named cross street, then by distance to the reporter.
+    The cross street itself is not a candidate. Without a graph the parsed
+    tokens are returned and ``edges`` stays empty.
     """
     parsed = parse_report_place(text)
+    parsed["text"] = text or ""
     result = {**parsed, "edges": [], "landmarks": [], "method": "name+distance"}
     if graph is None:
         return result
@@ -677,10 +800,16 @@ def remember_route(
     hops: list[dict],
     destination: dict,
     *,
-    citizen_id: str = ACTIVE_CITIZEN,
+    citizen_id: str | None = None,
     record_decision: bool = True,
 ) -> str:
-    """Create or update the active Citizen, its AT edge, and ROUTED_TO hops."""
+    """Create or update one visitor's Citizen, its AT edge, and ROUTED_TO hops.
+
+    The retired shared id ``citizen`` is not written. Callers that have no
+    session id get a route and no Citizen node.
+    """
+    if not citizen_id or citizen_id == LEGACY_CITIZEN:
+        return ""
     at = utc_now()
     graph.query(
         """
@@ -843,7 +972,7 @@ def route_to_shelter(
     candidates: list[dict] | None = None,
     *,
     record_decision: bool = True,
-    citizen_id: str = ACTIVE_CITIZEN,
+    citizen_id: str | None = None,
 ) -> dict:
     """Snap, rank open shelters by NEAR, then CCH (A*, then SPpaths). Lowest travel_s wins.
 
@@ -967,6 +1096,8 @@ def reroute_affected(graph, road_id: str) -> dict:
         road_name = named[0][0]
     for citizen_id, lat, lon, eta_s, decision_id in affected:
         if lat is None or lon is None:
+            continue
+        if not citizen_id or str(citizen_id) == LEGACY_CITIZEN:
             continue
         old_eta = int(eta_s or 0)
         try:

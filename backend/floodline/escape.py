@@ -93,7 +93,7 @@ def _route_to_place(graph, lat: float, lon: float, place: dict, citizen_id: str 
         "kind": place["role"],
         "id": place["id"],
         "name": place["name"],
-    }, citizen_id=citizen_id or "citizen")
+    }, citizen_id=citizen_id)
     return {
         "origin": snapped,
         "destination": {
@@ -133,7 +133,7 @@ def route_payload(
     if chosen_place is not None:
         raw = _route_to_place(graph, lat, lon, chosen_place, citizen_id=citizen_id)
     else:
-        raw = route_to_shelter(graph, lat, lon, citizen_id=citizen_id or "citizen")
+        raw = route_to_shelter(graph, lat, lon, citizen_id=citizen_id)
         subtype = ""
         for place in places:
             if str(place["id"]) == str(raw["destination"].get("id")):

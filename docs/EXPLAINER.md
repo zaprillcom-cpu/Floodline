@@ -46,9 +46,9 @@ If the index or `loc` is missing, Python walks `lat`/`lon` with haversine. There
 
 FalkorDB prefilters with `toLower(r.name) CONTAINS toLower($token)`. Python then requires a whole word, so `tree` does not match `street` and `no 6` does not match `Road No.16`. A name that is only an OSM highway type (`living_street`, `residential`) is dropped. A phrase after "near", "at", or "by" is a landmark. It is not added to the road-name search when the report already names a road. It is resolved through `(:Landmark)-[:NEAR]->(:Intersection)`, and the roads touching that intersection become candidates.
 
-Candidates are one row per `road_id`, at most eight. Rank is distance to the landmark, then distance to the reporter, then how much of the name the report actually said (an unmentioned "Flyover" or "Colony" loses to the plain name). Each row carries `name`, `dist_m`, and `landmark_m` so the model can pick. Without a graph, the parsed tokens are returned and `edges` is empty.
+Candidates are one row per road name, at most eight. Rank is match quality first: the full name as written in the report, then every significant token (`Swami Vivekanand Road` for `SV`), then a partial overlap. Distance is the tiebreak. A second street (`near Road No.4`, `off Station Road`) is an anchor: the segment of the named road closest to that intersection is the one returned, and the anchor street is not a candidate. Each row carries `name`, `dist_m`, and `anchor_m`. A landmark is not a road. It is returned separately, and the roads that touch it are the candidates only when the report did not name a road. Without a graph, the parsed tokens are returned and `edges` is empty.
 
-**Design choice.** The graph returns a short list. The model chooses one row from that list. Distance never overrides a named road that is closer to the pin.
+**Design choice.** The graph returns a short list of roads. The model chooses one `road_id` from that list. Place names are context, not ids it can close.
 
 ## `route_to_shelter`
 
@@ -62,7 +62,7 @@ Candidates are one row per `road_id`, at most eight. Rank is distance to the lan
 4. `routing.route` tries `db.idx.cch.query` on `ROAD.travel_s`, then `algo.AStar`, then `algo.SPpaths`. Paths whose weight is at least 1e8 seconds are thrown away, which is how a closed road (`travel_s = 1e9`) stays in the graph but drops out of the route.
 5. The lowest `travel_s` wins. If no shelter is reachable, the nearest open hospital with free beds is the destination. That is the same CCH chain.
 
-**Memory.** Each browser keeps its own id in `localStorage` (`floodline.citizen`, 8–80 letters, digits, `_`, or `-`) and sends it as `citizen` on `GET /api/route` and `POST /api/scenario/report`. An id that does not match is ignored and the shared node `citizen` is used, which is what the tests do. `remember_route` `MERGE`s that Citizen, deletes its old `AT` and `ROUTED_TO` edges, and writes one `ROUTED_TO` per hop with `seq` and `road_id`. The Decision kind is `citizen_route`, not `route`, so the ambulance's before/after pair in the snapshot is not confused with the evacuee. A later GPS poll from the same browser updates that same Decision in place (same id, same sequence) so the Live tab does not fill with duplicate cards.
+**Memory.** Each browser keeps its own id in `localStorage` (`floodline.citizen`, 8–80 letters, digits, `_`, or `-`) and sends it as `citizen` on `GET /api/route` and `POST /api/scenario/report`. An id that does not match is ignored, and no Citizen is written. The old shared id `citizen` is retired: routes do not create it, reroute skips it, and the memory reset deletes it along with every other Citizen. `remember_route` `MERGE`s the session Citizen, deletes its old `AT` and `ROUTED_TO` edges, and writes one `ROUTED_TO` per hop with `seq` and `road_id`. The Decision kind is `citizen_route`, not `route`, so the ambulance's before/after pair in the snapshot is not confused with the evacuee. A later GPS poll from the same browser updates that same Decision in place (same id, same sequence) so the Live tab does not fill with duplicate cards.
 
 **Show graph.** The green route is `Citizen.path_osmids` for the most recently updated citizen. If no citizen has a path, the newest non-superseded `citizen_route` Decision is used, and only then a `kind: route` ambulance Decision.
 
@@ -127,7 +127,7 @@ A call that fails the schema rejects the whole reply. A missing key returns the 
 
 ## Landmarks
 
-When a tile is written (`persist_area`), named schools and hospitals already on the tile become `(:Landmark)-[:NEAR {dist_m}]->(:Intersection)`, snapped within 700 m. Malls, railway stations, and the same amenity types are also requested from the first Overpass mirror (about 3 seconds). A failure returns no POIs and the tile still loads. A tile that is already cached is not reindexed; reload it to pick up Oberoi Mall or Goregaon station. Generic names (`hospital`, `school`, `station`) are skipped.
+When a tile is written (`persist_area`), named schools and hospitals already on the tile become `(:Landmark)-[:NEAR {dist_m}]->(:Intersection)`, snapped within 700 m. Malls, railway stations, and the same amenity types are also requested from the first Overpass mirror (about 3 seconds). A failure returns no POIs and the tile still loads. A cache hit that finds zero Landmark nodes indexes them from the offline region places and the same Overpass fallback, without deleting streets. `POST /api/admin/landmarks/refresh?graph=` (admin token) deletes the current Landmark nodes and writes them again. Generic names (`hospital`, `school`, `station`) are skipped.
 
 ## Clocks and place names
 
@@ -141,4 +141,4 @@ The sentence about the Valencia DANA reconstruction is added only when `Meta.sou
 
 ## What still needs a person
 
-Set `OPENAI_API_KEY` on the Railway service if the live demo should show `planner llm`. Without it the card shows `planner keyword` and a coordinate report can still close the nearest open road. `OPENAI_MODEL` is optional. `ADMIN_TOKEN` guards the Valencia admin load and the memory reset. A freshly loaded tile needs outbound access to Overpass if malls and stations should become landmarks; a tile already sitting in FalkorDB does not gain them until it is loaded again. FalkorDB host, port, and graph name are the existing Railway variables.
+Set `OPENAI_API_KEY` on the Railway service if the live demo should show `planner llm`. Without it the card shows `planner keyword` and a coordinate report can still close the nearest open road. `OPENAI_MODEL` is optional. `ADMIN_TOKEN` guards the Valencia admin load, the memory reset, and landmark refresh. A cached tile backfills landmarks on the next area load when it has none. `POST /api/admin/landmarks/refresh?graph=` forces that index. FalkorDB host, port, and graph name are the existing Railway variables.

@@ -236,6 +236,8 @@ def reset_agent_memory(settings: Settings | None = None) -> dict:
         label: int(rows(graph.query(f"MATCH (n:{label}) RETURN count(n)"))[0][0] or 0)
         for label in ("Report", "Task", "Decision", "Citizen")
     }
+    legacy = rows(graph.query("MATCH (c:Citizen {id: 'citizen'}) RETURN count(c)"))
+    legacy_citizen = int(legacy[0][0] or 0) if legacy else 0
     graph.query(
         """
         MATCH (n)
@@ -243,7 +245,13 @@ def reset_agent_memory(settings: Settings | None = None) -> dict:
         DETACH DELETE n
         """
     )
-    return {"ok": True, "graph": cfg.graph, "cleared": before, "reopened": [road_id for (road_id,) in closed if road_id]}
+    return {
+        "ok": True,
+        "graph": cfg.graph,
+        "cleared": before,
+        "legacy_citizen": legacy_citizen,
+        "reopened": [road_id for (road_id,) in closed if road_id],
+    }
 
 
 def snapshot(settings: Settings | None = None) -> dict:

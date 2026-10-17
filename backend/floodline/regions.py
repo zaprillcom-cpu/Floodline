@@ -136,6 +136,44 @@ def _radius_bbox(lat: float, lon: float, radius_m: float) -> tuple[float, float,
     return (lon - dlon, lat - dlat, lon + dlon, lat + dlat)
 
 
+def places_in_radius(lat: float, lon: float, radius_m: float) -> list[dict]:
+    """Schools, hospitals, and shelters from the offline region, without loading streets."""
+    region = region_containing(lat, lon)
+    if region is None:
+        return []
+    west, south, east, north = _radius_bbox(lat, lon, radius_m)
+    try:
+        db = _connect(region)
+    except Exception:
+        return []
+    try:
+        place_rows = db.execute(
+            """
+            SELECT id, name, kind, role, lat, lon FROM places
+            WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?
+            """,
+            (south, north, west, east),
+        ).fetchall()
+    except Exception:
+        return []
+    finally:
+        db.close()
+    places = []
+    for row in place_rows:
+        if row["lat"] is None or row["lon"] is None or not row["name"]:
+            continue
+        places.append(
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "kind": row["kind"] or row["role"] or "place",
+                "lat": float(row["lat"]),
+                "lon": float(row["lon"]),
+            }
+        )
+    return places
+
+
 def crop_tile(region: Region, lat: float, lon: float, radius_m: float) -> tuple[dict, list[dict], list[dict]]:
     """Nodes, edges, shelters, and hospitals inside ``radius_m`` of the point."""
     west, south, east, north = _radius_bbox(lat, lon, radius_m)

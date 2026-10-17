@@ -363,7 +363,7 @@ RETURN DISTINCT r.road_id, r.name, i.lat, i.lon, j.lat, j.lon,
        coalesce(r.highway, ''), coalesce(r.status, 'open')
 ```
 
-Python ranks at most eight candidates by landmark distance, then reporter distance, then name overlap. The model receives `name` and `dist_m` and picks one `road_id`.
+Python ranks at most eight road names by match quality (exact full name, then all significant tokens, then a partial overlap), then by distance to the cross street, then by distance to the reporter. The cross street is not returned. The model receives roads and places in separate lists and may copy `road_id` only from the roads.
 
 Landmarks are written when a tile is persisted:
 
@@ -399,7 +399,7 @@ ORDER BY n.dist_m ASC
 LIMIT $k
 ```
 
-Python keeps the first five that are open and not full, then calls `routing.route` (CCH, else A*, else SPpaths) and keeps the lowest `travel_s`. The Citizen id is the browser session (`citizen` query on `GET /api/route`), or `citizen` when the client omits a valid id. That node is `MERGE`d. Its old `AT` and `ROUTED_TO` edges are deleted and rewritten:
+Python keeps the first five that are open and not full, then calls `routing.route` (CCH, else A*, else SPpaths) and keeps the lowest `travel_s`. The Citizen id is the browser session (`citizen` query on `GET /api/route`). A missing id does not write the retired shared node `citizen`. Reroute ignores that id. Memory reset deletes it with the other Citizens. A real session node is `MERGE`d. Its old `AT` and `ROUTED_TO` edges are deleted and rewritten:
 
 ```cypher
 UNWIND $hops AS hop
