@@ -2,42 +2,42 @@
 
 A flood, an earthquake, a fire, or a landslide cuts a road. Floodline routes the person on that street to the nearest open shelter on the drive network already in FalkorDB, then bends the line when a new report closes a road on the way. Scout, Dispatcher, and Analyst coordinate through Task and Decision nodes and show that work on the Live and Graph tabs.
 
-This is a solo entry for [WeMakeDevs × FalkorDB Graph Hacks](https://github.com/zaprillcom-cpu/Floodline). **Track 1 — Agents That Act on Connected Data** (primary): Scout closes the road the report names, Dispatcher reroutes, Analyst measures who can still reach a shelter. **Track 2 — Agent Memory and Coordination**: the handoff is a `Task` and a `Decision` in the graph, so a new process can resume it. Valencia is one corridor. The same three agents run on any loaded tile (Mumbai, Manhattan, or the browser's location). A 10-node synthetic network remains the offline fallback.
+Submitted by Vishnuraj, built with Sahil Mane and an AI coding assistant (Cursor), for [WeMakeDevs × FalkorDB Graph Hacks](https://github.com/zaprillcom-cpu/Floodline). **Track 1 — Agents That Act on Connected Data** (primary): Scout closes the road the report names, Dispatcher reroutes, Analyst measures who can still reach a shelter. **Track 2 — Agent Memory and Coordination**: the handoff is a `Task` and a `Decision` in the graph, so a new process can resume it. Valencia is one corridor. The same three agents run on any loaded tile (Mumbai, Manhattan, or the browser's location). A 10-node synthetic network remains the offline fallback.
 
 Live: API [floodline-production.up.railway.app](https://floodline-production.up.railway.app) · web [https://floodline-xi.vercel.app](https://floodline-xi.vercel.app). The web app is a full-screen MapLibre map (OpenFreeMap dark, 3D buildings). Desktop gets a side HUD. A phone gets bottom tabs (Escape, Report, Live, Me) and a bottom sheet. Navigation is simulated GPS along the FalkorDB line.
 
 ## Who built what
 
-Sahil directed the product, the graph model, and the Cypher, and reviews and explains the result. Cursor (Grok 4.7, in Cursor) wrote the code, including every function in the table below. Those functions are not Sahil's authorship. Full note: [AI_DISCLOSURE.md](AI_DISCLOSURE.md). A plain-language walkthrough for the demo is [docs/EXPLAINER.md](docs/EXPLAINER.md).
+Submitted by Vishnuraj, built with Sahil Mane and an AI coding assistant (Cursor). The AI assistant wrote most of the code, including the core functions (Shelter/Citizen nodes, routing and reroute queries, LLM planner), while Vishnuraj and Sahil Mane directed the product, made the design decisions, and reviewed and tested the work. Full note: [AI_DISCLOSURE.md](AI_DISCLOSURE.md). A plain-language walkthrough for the demo is [docs/EXPLAINER.md](docs/EXPLAINER.md).
 
 | Task | Written by | Where |
 |---|---|---|
-| Valencia extract inside `backend/`, `POST /api/admin/load-valencia` | Cursor | `backend/floodline/api.py`, `backend/data/osm/` |
-| Streets around the citizen, `POST /api/area/load` | Cursor | `backend/floodline/area.py`, `web/components/EscapeApp.tsx` |
-| Shelter and Citizen model (`NEAR`, `AT`, `ROUTED_TO`, `CLOSES`) | Cursor, at Sahil's direction | `ensure_shelter_citizen_model` in `backend/floodline/stubs.py` |
-| `route_to_shelter` (snap → top-k open shelters → CCH) | Cursor, at Sahil's direction | `route_to_shelter` in `backend/floodline/stubs.py` |
-| MapLibre map, OpenFreeMap dark, 3D buildings | Cursor | `web/components/FloodMap.tsx` |
-| Design tokens | Cursor | `web/lib/theme.ts` |
-| LLM planner (`geocode`, `close_road`, `severity`) | Cursor, at Sahil's direction | `plan_with_llm` in `backend/floodline/agents/llm_planner.py` |
-| Report geocoding onto ROAD edges | Cursor, at Sahil's direction | `geocode_report` in `backend/floodline/stubs.py` |
-| Reroute fan-out and Decision explanations | Cursor, at Sahil's direction | `reroute_affected` in `backend/floodline/stubs.py` |
-| Snap and shelter-reachability WCC | Cursor, at Sahil's direction | `snap_point`, `shelter_reachability` in `backend/floodline/stubs.py` |
-| Analyst on any loaded area (WCC + maxFlow) | Cursor, at Sahil's direction | `assess_loaded_area` in `backend/floodline/analysis.py` |
-| SSE `GET /api/stream` | Cursor | `backend/floodline/events.py` |
-| Turn-by-turn steps and simulated GPS | Cursor | `backend/floodline/navigation.py`, `web/lib/geo.ts` |
-| Live agent feed | Cursor | `web/components/AgentFeed.tsx` |
-| Mobile tabs and bottom sheet | Cursor | `web/components/MobileShell.tsx` |
-| Desktop HUD | Cursor | `web/components/DesktopHud.tsx` |
-| Cut-off shades on the map | Cursor | `FloodMap.tsx` / `shelter_reachability` |
-| Me tab (localStorage) | Cursor | `web/components/MePanel.tsx` |
-| This README, disclosure, explainer, queries | Cursor draft, Sahil reviews | this file, `AI_DISCLOSURE.md`, `docs/` |
-| Demo video | Sahil | — |
+| Valencia extract inside `backend/`, `POST /api/admin/load-valencia` | AI coding assistant (Cursor) | `backend/floodline/api.py`, `backend/data/osm/` |
+| Streets around the citizen, `POST /api/area/load` | AI coding assistant (Cursor) | `backend/floodline/area.py`, `web/components/EscapeApp.tsx` |
+| Shelter and Citizen model (`NEAR`, `AT`, `ROUTED_TO`, `CLOSES`) | AI coding assistant (Cursor). Directed, reviewed, and tested by Vishnuraj and Sahil Mane | `ensure_shelter_citizen_model` in `backend/floodline/stubs.py` |
+| `route_to_shelter` (snap → top-k open shelters → CCH) | AI coding assistant (Cursor). Directed, reviewed, and tested by Vishnuraj and Sahil Mane | `route_to_shelter` in `backend/floodline/stubs.py` |
+| MapLibre map, OpenFreeMap dark, 3D buildings | AI coding assistant (Cursor) | `web/components/FloodMap.tsx` |
+| Design tokens | AI coding assistant (Cursor) | `web/lib/theme.ts` |
+| LLM planner (`geocode`, `close_road`, `severity`) | AI coding assistant (Cursor). Directed, reviewed, and tested by Vishnuraj and Sahil Mane | `plan_with_llm` in `backend/floodline/agents/llm_planner.py` |
+| Report geocoding onto ROAD edges | AI coding assistant (Cursor). Directed, reviewed, and tested by Vishnuraj and Sahil Mane | `geocode_report` in `backend/floodline/stubs.py` |
+| Reroute fan-out and Decision explanations | AI coding assistant (Cursor). Directed, reviewed, and tested by Vishnuraj and Sahil Mane | `reroute_affected` in `backend/floodline/stubs.py` |
+| Snap and shelter-reachability WCC | AI coding assistant (Cursor). Directed, reviewed, and tested by Vishnuraj and Sahil Mane | `snap_point`, `shelter_reachability` in `backend/floodline/stubs.py` |
+| Analyst on any loaded area (WCC + maxFlow) | AI coding assistant (Cursor). Directed, reviewed, and tested by Vishnuraj and Sahil Mane | `assess_loaded_area` in `backend/floodline/analysis.py` |
+| SSE `GET /api/stream` | AI coding assistant (Cursor) | `backend/floodline/events.py` |
+| Turn-by-turn steps and simulated GPS | AI coding assistant (Cursor) | `backend/floodline/navigation.py`, `web/lib/geo.ts` |
+| Live agent feed | AI coding assistant (Cursor) | `web/components/AgentFeed.tsx` |
+| Mobile tabs and bottom sheet | AI coding assistant (Cursor) | `web/components/MobileShell.tsx` |
+| Desktop HUD | AI coding assistant (Cursor) | `web/components/DesktopHud.tsx` |
+| Cut-off shades on the map | AI coding assistant (Cursor) | `FloodMap.tsx` / `shelter_reachability` |
+| Me tab (localStorage) | AI coding assistant (Cursor) | `web/components/MePanel.tsx` |
+| This README, disclosure, explainer, queries | AI coding assistant (Cursor). Reviewed by Vishnuraj and Sahil Mane | this file, `AI_DISCLOSURE.md`, `docs/` |
+| Demo video | Recorded and edited with the AI assistant. Vishnuraj narrates the voiceover | — |
 
 ## Environment
 
 | Where | Variable | Value |
 |---|---|---|
-| Railway (service root `backend`) | `ADMIN_TOKEN` | secret. Guards `POST /api/admin/load-valencia`. Do not commit it. |
+| Railway (service root `backend`) | `ADMIN_TOKEN` | secret. Guards `POST /api/admin/load-valencia`, `POST /api/admin/memory/reset`, and `POST /api/admin/landmarks/refresh` (all via the `X-Admin-Token` header). Do not commit it. |
 | Railway | `OPENAI_API_KEY` | optional. When set, Scout uses `plan_with_llm` (OpenAI tool calling). When unset, the keyword planner still closes roads. Do not commit it. |
 | Railway | `OPENAI_MODEL` | optional. Default `gpt-4o-mini`. |
 | Railway | `OPENAI_BASE_URL` | optional. Default `https://api.openai.com/v1`. |
@@ -98,11 +98,11 @@ curl 'http://127.0.0.1:8000/api/route?lat=39.4294&lon=-0.4183&graph=valencia'
 curl 'http://127.0.0.1:8000/api/route?lat=19.1663&lon=72.8526&graph=fl-p1915-p07285'
 ```
 
-Limits: radius 50–5000 m (default 2000; the map asks for 2500 inside a bundled region), tile 0.05°, 4 uncached Overpass downloads per minute, 8 provisional shelters, 4 hospitals, four Overpass mirrors sharing a 40 s budget. Offline tiles skip that limit. An area with no open shelter falls back to the nearest open hospital with free beds. `ADMIN_TOKEN` still guards only `POST /api/admin/load-valencia`. After a tile loads, Analyst runs `algo.WCC` and `algo.maxFlow` for that district and writes Task and Decision nodes the Live and Graph tabs already read. The Valencia/DANA sentence appears only on the synthetic corridor (or a district whose name contains Paiporta). Live reports and area loads stamp `utc_now()`, not the 2024-10-29 replay clock.
+Limits: radius 50–5000 m (default 2000; the map asks for 2500 inside a bundled region), tile 0.05°, 4 uncached Overpass downloads per minute, 8 provisional shelters, 4 hospitals, four Overpass mirrors sharing a 40 s budget. Offline tiles skip that limit. An area with no open shelter falls back to the nearest open hospital with free beds. `ADMIN_TOKEN` guards `POST /api/admin/load-valencia`, `POST /api/admin/memory/reset`, and `POST /api/admin/landmarks/refresh` (all via the `X-Admin-Token` header). After a tile loads, Analyst runs `algo.WCC` and `algo.maxFlow` for that district and writes Task and Decision nodes the Live and Graph tabs already read. The Valencia/DANA sentence appears only on the synthetic corridor (or a district whose name contains Paiporta). Live reports and area loads stamp `utc_now()`, not the 2024-10-29 replay clock.
 
 **Tracks:** Track 1 — Agents That Act on Connected Data (primary). Track 2 — Agent Memory & Coordination.
 
-The live URLs are above. The demo video is still Sahil's. Local setup below is how to reproduce the graph.
+The live URLs are above. The demo video was recorded and edited with the AI assistant, and Vishnuraj narrates the voiceover. Local setup below is how to reproduce the graph.
 
 ## What this slice does
 
@@ -363,8 +363,8 @@ The October 2024 DANA floods in Valencia killed more than 200 people. Floodline 
 
 ## AI assistance
 
-Cursor (Grok 4.7, in Cursor) wrote the loader, the API, the map, and the graph operations in `stubs.py` and `llm_planner.py`, at Sahil's direction. Sahil reviews and explains them. He did not write those functions. With `OPENAI_API_KEY` set, Scout's planner is a live OpenAI tool call; without it, the keyword planner runs and the Decision says `planner: keyword`. Full note: [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
+Submitted by Vishnuraj, built with Sahil Mane and an AI coding assistant (Cursor). The AI assistant wrote most of the code, including the loader, the API, the map, and the core functions (Shelter/Citizen nodes, routing and reroute queries, LLM planner). Vishnuraj and Sahil Mane directed the product, made the design decisions, and reviewed and tested the work. They did not write those functions. With `OPENAI_API_KEY` set, Scout's planner is a live OpenAI tool call; without it, the keyword planner runs and the Decision says `planner: keyword`. Full note: [AI_DISCLOSURE.md](AI_DISCLOSURE.md).
 
 ## Team
 
-Solo entry. Repository: [github.com/zaprillcom-cpu/Floodline](https://github.com/zaprillcom-cpu/Floodline). License: MIT.
+Vishnuraj (registered participant) and Sahil Mane (collaborator). Repository: [github.com/zaprillcom-cpu/Floodline](https://github.com/zaprillcom-cpu/Floodline). License: MIT.

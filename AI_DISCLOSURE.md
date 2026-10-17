@@ -1,13 +1,13 @@
 # AI assistance disclosure
 
-Floodline is a solo entry to WeMakeDevs × FalkorDB Graph Hacks (Tracks 1 and 2).
+Submitted by Vishnuraj, built with Sahil Mane and an AI coding assistant (Cursor). Floodline is an entry to WeMakeDevs × FalkorDB Graph Hacks (Tracks 1 and 2).
 
 ## Tools used to build this repository
 
-- **Cursor (Grok 4.7)**, as a cloud coding agent, wrote the FalkorDB loader, the OSMnx Valencia corridor ingest, Scout and Dispatcher (including crash/resume from Task nodes), the replay clock, the WCC cut-off and max-flow tools, the FastAPI service, the Next.js map, the tests, and these docs.
-- The same assistant, at Sahil's direction, implemented the citizen-escape functions that used to be `TODO(Sahil)` stubs. Sahil reviews this file and the code. He did not write those functions.
+- **Cursor (Grok 4.7)**, as a cloud coding agent, wrote most of the code, including the core functions (Shelter/Citizen nodes, routing and reroute queries, LLM planner), the FalkorDB loader, the OSMnx Valencia corridor ingest, Scout and Dispatcher (including crash/resume from Task nodes), the replay clock, the WCC cut-off and max-flow tools, the FastAPI service, the Next.js map, the tests, and these docs.
+- The same assistant implemented the citizen-escape functions that used to be `TODO(Sahil)` stubs. Vishnuraj and Sahil Mane directed the product, made the design decisions, and reviewed and tested the work. They did not write those functions.
 
-The author of the entry is responsible for reviewing, running, and explaining the graph model, the Cypher, and the architecture. A walkthrough written for that explanation is [docs/EXPLAINER.md](docs/EXPLAINER.md).
+Vishnuraj is the registered participant. Sahil Mane is a collaborator. A walkthrough written for the explanation is [docs/EXPLAINER.md](docs/EXPLAINER.md).
 
 ## Citizen escape
 
@@ -23,7 +23,7 @@ The author of the entry is responsible for reviewing, running, and explaining th
 - `POST /api/area/city/mumbai` and `/nyc` crop the offline tile at Goregaon (19.1663, 72.8526) and midtown Manhattan. `POST /api/area/city/valencia` and `POST /api/area/valencia` still load `valencia_corridor.json`. The city buttons call `/api/area/load`, using the last GPS fix when it falls inside the city.
 - The map shows a destination card (shelter or hospital name, distance, ETA), a Destination pin, and a change-destination list. Live mode follows `watchPosition`. Demo mode simulates movement.
 
-### Written by Cursor at Sahil's direction (reviewed by Sahil, not written by him)
+### Written by the AI coding assistant (Cursor). Directed, reviewed, and tested by Vishnuraj and Sahil Mane, not written by them
 
 | Function | File | What it does |
 |---|---|---|
@@ -36,7 +36,7 @@ The author of the entry is responsible for reviewing, running, and explaining th
 | `plan_with_llm` | `backend/floodline/agents/llm_planner.py` | OpenAI tool calls, keyword fallback |
 | `assess_loaded_area` | `backend/floodline/analysis.py` | Analyst WCC + maxFlow on any loaded district |
 
-The demo video is Sahil's. No API keys are committed. `ADMIN_TOKEN` and, if used, `OPENAI_API_KEY` are set only on Railway.
+The demo video was recorded and edited with the AI assistant. Vishnuraj narrates the voiceover. No API keys are committed. `ADMIN_TOKEN` and, if used, `OPENAI_API_KEY` are set only on Railway.
 
 ## Runtime model inside the product
 
