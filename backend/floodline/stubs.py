@@ -22,8 +22,53 @@ TOP_K = 5
 
 _CODE = re.compile(r"\b([A-Za-z]{1,6}-\d{1,4}[A-Za-z]?)\b")
 _LANDMARK = re.compile(
-    r"\b(?:near|at|by)\s+([A-Za-z][A-Za-z'’.\-]+(?:\s+[A-Za-z][A-Za-z'’.\-]+){0,2})"
+    r"\b(?:near|at|by)\s+([A-Za-z0-9][A-Za-z0-9'’.\-]*(?:\s+[A-Za-z0-9][A-Za-z0-9'’.\-]*){0,3})",
+    re.IGNORECASE,
 )
+_NUMBERED = re.compile(r"\b(?:no\.?|number)\s*\.?\s*(\d{1,3})\b", re.IGNORECASE)
+_SHORT = re.compile(r"\b(SV|S\.V\.|MG|M\.G\.|WEH|GMLR|LBS|EEH|JVLR)\b", re.IGNORECASE)
+# Spoken abbreviations → the words OSM actually stores on the road name.
+_ALIASES = {
+    "sv": ["swami vivekanand", "swami vivekananda"],
+    "s.v.": ["swami vivekanand", "swami vivekananda"],
+    "mg": ["mahatma gandhi"],
+    "m.g.": ["mahatma gandhi"],
+    "weh": ["western express"],
+    "gmlr": ["goregaon mulund"],
+    "lbs": ["lal bahadur shastri"],
+    "eeh": ["eastern express"],
+    "jvlr": ["jogeshwari vikhroli"],
+}
+# OSM writes the highway tag into `name` when a way is unnamed.
+_TYPE_NAMES = {
+    "residential",
+    "living street",
+    "living_street",
+    "unclassified",
+    "service",
+    "tertiary",
+    "secondary",
+    "primary",
+    "trunk",
+    "motorway",
+    "road",
+    "street",
+    "path",
+    "footway",
+    "track",
+    "pedestrian",
+    "cycleway",
+    "primary link",
+    "secondary link",
+    "tertiary link",
+    "trunk link",
+    "motorway link",
+    "primary_link",
+    "secondary_link",
+    "tertiary_link",
+    "trunk_link",
+    "motorway_link",
+}
 _STOP = {
     "about",
     "ahead",
@@ -41,11 +86,29 @@ _STOP = {
     "passable",
     "report",
     "road",
+    "above",
+    "across",
+    "brigade",
+    "building",
+    "clear",
+    "collapsed",
+    "completely",
+    "drained",
+    "drive",
+    "fell",
+    "help",
+    "lots",
+    "past",
+    "rubble",
     "street",
     "that",
     "this",
+    "today",
+    "tree",
     "under",
     "water",
+    "weather",
+    "wheels",
     "waterlogging",
     "with",
 }
@@ -83,36 +146,133 @@ def _open_shelter(open_flag, capacity, occupancy) -> bool:
     return int(occupancy) < int(capacity)
 
 
+def _norm_name(text: str) -> str:
+    """Lowercase, turn No.6 / no. 6 into 'no 6', and treat underscores as spaces."""
+    cleaned = (text or "").lower().replace("_", " ")
+    cleaned = re.sub(r"\bno\.?\s*", "no ", cleaned)
+    cleaned = re.sub(r"[^a-z0-9]+", " ", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _phrase_in_name(name: str, phrase: str) -> bool:
+    """Whole-word match. 'tree' does not match 'street'."""
+    haystack = _norm_name(name)
+    needle = _norm_name(phrase)
+    if not haystack or not needle:
+        return False
+    return re.search(rf"(?<![a-z0-9]){re.escape(needle)}(?![a-z0-9])", haystack) is not None
+
+
+def _is_type_name(name: str, highway: str = "") -> bool:
+    """Unnamed OSM ways store the highway tag as the name. Those are not roads to close by name."""
+    cleaned = _norm_name(name)
+    tag = _norm_name(highway)
+    if cleaned in _TYPE_NAMES:
+        return True
+    if tag and cleaned == tag:
+        return True
+    return False
+
+
+def road_name_matches(name: str, phrase: str, highway: str = "") -> bool:
+    if _is_type_name(name, highway):
+        return False
+    if _phrase_in_name(name, phrase):
+        return True
+    for alias in _ALIASES.get(_norm_name(phrase), []):
+        if _phrase_in_name(name, alias):
+            return True
+    return False
+
+
 def parse_report_place(text: str) -> dict:
-    """Pull a road code and a landmark out of a free-text report."""
+    """Pull road codes, short aliases, numbered roads, and a landmark from a report."""
+    raw = text or ""
     codes = []
-    for match in _CODE.finditer(text or ""):
+    for match in _CODE.finditer(raw):
         code = match.group(1)
         if code not in codes:
             codes.append(code)
+    shorts = []
+    for match in _SHORT.finditer(raw):
+        token = match.group(1)
+        if token not in shorts:
+            shorts.append(token)
+    numbered = []
+    for match in _NUMBERED.finditer(raw):
+        label = f"no {int(match.group(1))}"
+        if label not in numbered:
+            numbered.append(label)
     landmark = ""
-    found = _LANDMARK.search(text or "")
+    found = _LANDMARK.search(raw)
     if found:
         phrase = found.group(1).strip(" .")
         if not _CODE.fullmatch(phrase):
             landmark = phrase
+    aliases = []
+    for token in [*codes, *shorts]:
+        for alias in _ALIASES.get(token.lower().replace(" ", ""), []):
+            if alias not in aliases:
+                aliases.append(alias)
+        for alias in _ALIASES.get(_norm_name(token), []):
+            if alias not in aliases:
+                aliases.append(alias)
+    # Drop the spans we already classified so "CV-36" does not also yield the word "cv".
+    stripped = raw
+    for span in [*codes, *shorts]:
+        stripped = re.sub(rf"\b{re.escape(span)}\b", " ", stripped, flags=re.IGNORECASE)
+    stripped = _NUMBERED.sub(" ", stripped)
     words = []
-    for raw in re.findall(r"[A-Za-z][A-Za-z'’.\-]{3,}", text or ""):
-        token = raw.strip(" .").lower()
-        if token in _STOP or token in {code.lower() for code in codes}:
+    for token in re.findall(r"[A-Za-z][A-Za-z'’]{2,}", stripped):
+        lowered = token.strip(" .").lower()
+        if lowered in _STOP or lowered in {code.lower() for code in codes}:
             continue
-        if landmark and token in landmark.lower():
+        if lowered in {item.lower() for item in shorts}:
             continue
-        if token not in words:
-            words.append(token)
-    query = codes[0] if codes else (words[0] if words else landmark)
-    return {"codes": codes, "words": words, "landmark": landmark, "query": query}
+        if landmark and lowered in landmark.lower().split():
+            continue
+        if lowered not in words:
+            words.append(lowered)
+    query = codes[0] if codes else (shorts[0] if shorts else (numbered[0] if numbered else (words[0] if words else landmark)))
+    return {
+        "codes": codes,
+        "shorts": shorts,
+        "aliases": aliases,
+        "numbered": numbered,
+        "words": words,
+        "landmark": landmark,
+        "query": query,
+    }
+
+
+def _search_phrases(parsed: dict) -> list[str]:
+    phrases: list[str] = []
+    for item in (
+        list(parsed.get("codes") or [])
+        + list(parsed.get("shorts") or [])
+        + list(parsed.get("aliases") or [])
+        + list(parsed.get("numbered") or [])
+        + list(parsed.get("words") or [])
+    ):
+        text = str(item).strip()
+        if text and text not in phrases:
+            phrases.append(text)
+    # A landmark ("near Paiporta", "near Oberoi Mall") resolves through Landmark
+    # nodes, not by treating the place name as another road-name search. That
+    # search is only a fallback when the report names no road of its own.
+    road_specific = bool(
+        parsed.get("codes") or parsed.get("shorts") or parsed.get("numbered") or parsed.get("words")
+    )
+    landmark = (parsed.get("landmark") or "").strip()
+    if landmark and not road_specific and landmark not in phrases:
+        phrases.append(landmark)
+    return phrases
 
 
 def _road_rows(graph, token: str) -> list[dict]:
     found = rows(graph.query(cypher.GEOCODE_ROADS, {"token": token}))
     edges = []
-    for road_id, name, alat, alon, blat, blon, adistrict, bdistrict, aname, bname in found:
+    for road_id, name, alat, alon, blat, blon, adistrict, bdistrict, aname, bname, highway, status in found:
         edges.append(
             {
                 "road_id": road_id,
@@ -125,56 +285,80 @@ def _road_rows(graph, token: str) -> list[dict]:
                 "bdistrict": bdistrict or "",
                 "aname": aname or "",
                 "bname": bname or "",
+                "highway": highway or "",
+                "status": status or "open",
             }
         )
     return edges
 
 
-def _rank_edges(edges: list[dict], parsed: dict, lat: float | None, lon: float | None) -> list[dict]:
-    """One row per road_id. A road code outranks a landmark that merely sits in the name."""
-    landmark = (parsed.get("landmark") or "").lower()
-    codes = [code.lower() for code in parsed.get("codes") or []]
+def _name_score(name: str, phrases: list[str]) -> int:
+    """Prefer the name the report actually said. Extra words (Flyover, Colony) lose when unmentioned."""
+    name_words = set(_norm_name(name).split()) - {"road", "rd", "marg", "street", "st"}
+    mentioned = set()
+    for phrase in phrases:
+        mentioned.update(_norm_name(phrase).split())
+    mentioned -= {"road", "rd", "marg", "street", "st", "no"}
+    if not name_words:
+        return 0
+    overlap = name_words & mentioned
+    if not overlap:
+        return 0
+    extra = name_words - mentioned
+    return 40 + 20 * len(overlap) - 15 * len(extra)
+
+
+def _rank_edges(
+    edges: list[dict],
+    parsed: dict,
+    lat: float | None,
+    lon: float | None,
+    landmark_points: list[dict] | None = None,
+) -> list[dict]:
+    """One row per road_id. Distance to the reporter, then to a landmark, then the name."""
+    phrases = _search_phrases(parsed)
     grouped: dict[str, dict] = {}
     for edge in edges:
-        name = (edge.get("name") or "").lower()
-        if codes and not any(code in name for code in codes):
+        if _is_type_name(edge.get("name") or "", edge.get("highway") or ""):
             continue
-        score = 0
-        if codes and any(code in name for code in codes):
-            score += 100
-        elif not codes:
-            score += 40
-        blob = " ".join(
-            [
-                edge.get("adistrict") or "",
-                edge.get("bdistrict") or "",
-                edge.get("aname") or "",
-                edge.get("bname") or "",
-                edge.get("name") or "",
-            ]
-        ).lower()
-        if landmark and landmark in blob:
-            score += 25
+        matched = [phrase for phrase in phrases if road_name_matches(edge.get("name") or "", phrase, edge.get("highway") or "")]
+        near_landmark = bool(edge.get("near_landmark"))
+        if not matched and not near_landmark:
+            continue
+        score = _name_score(edge.get("name") or "", phrases) + (25 if near_landmark else 0)
         mid_lat = (edge["alat"] + edge["blat"]) / 2
         mid_lon = (edge["alon"] + edge["blon"]) / 2
         dist_m = None
         if lat is not None and lon is not None:
             dist_m = haversine_m(lat, lon, mid_lat, mid_lon)
+        landmark_m = None
+        for point in landmark_points or []:
+            if point.get("lat") is None:
+                continue
+            gap = haversine_m(float(point["lat"]), float(point["lon"]), mid_lat, mid_lon)
+            if landmark_m is None or gap < landmark_m:
+                landmark_m = gap
         current = grouped.get(edge["road_id"])
         if current is None or score > current["score"] or (
-            score == current["score"] and dist_m is not None and (current["dist_m"] is None or dist_m < current["dist_m"])
+            score == current["score"]
+            and dist_m is not None
+            and (current["dist_m"] is None or dist_m < current["dist_m"])
         ):
             grouped[edge["road_id"]] = {
                 "road_id": edge["road_id"],
                 "name": edge["name"],
-                "dist_m": dist_m,
+                "dist_m": None if dist_m is None else int(round(dist_m)),
+                "landmark_m": None if landmark_m is None else int(round(landmark_m)),
                 "score": score,
+                "status": edge.get("status") or "open",
             }
-    ranked = sorted(
-        grouped.values(),
-        key=lambda item: (-item["score"], item["dist_m"] if item["dist_m"] is not None else 10**12),
-    )
-    return ranked[:5]
+    def _order(item: dict):
+        place = item["landmark_m"] if item["landmark_m"] is not None else item["dist_m"]
+        reporter = item["dist_m"] if item["dist_m"] is not None else 10**12
+        return (place if place is not None else 10**12, reporter, -item["score"])
+
+    ranked = sorted(grouped.values(), key=_order)
+    return ranked[:8]
 
 
 def ensure_shelter_citizen_model(graph, candidates: list[dict] | None = None) -> dict:
@@ -320,32 +504,106 @@ def _attach_at(graph, citizen_id: str, osmid: int, lat: float, lon: float) -> No
     )
 
 
-def geocode_report(text: str, graph=None, lat: float | None = None, lon: float | None = None) -> dict:
-    """Street name or landmark → ROAD edges, by name match then distance.
-
-    "CV-36 flooded near Paiporta" returns the CV-36 edges. The landmark only
-    breaks ties. Without a graph the parsed tokens are returned and ``edges``
-    stays empty.
-    """
-    parsed = parse_report_place(text)
-    result = {**parsed, "edges": [], "method": "name+distance"}
-    if graph is None:
-        return result
-    tokens = list(parsed["codes"])
-    if not tokens:
-        tokens = list(parsed["words"])
-    if not tokens and parsed["landmark"]:
-        tokens = [parsed["landmark"]]
-    edges: list[dict] = []
+def _landmark_hits(graph, phrase: str) -> list[dict]:
+    if not phrase:
+        return []
+    tokens = [phrase] + [word for word in phrase.split() if len(word) >= 4]
+    hits = []
     seen = set()
     for token in tokens:
-        for edge in _road_rows(graph, token):
+        try:
+            found = rows(graph.query(cypher.LANDMARKS_BY_NAME, {"token": token}))
+        except Exception:
+            continue
+        for lid, name, lat, lon, osmid in found:
+            if lid in seen or not _phrase_in_name(name or "", token):
+                continue
+            seen.add(lid)
+            hits.append(
+                {
+                    "id": lid,
+                    "name": name,
+                    "lat": float(lat or 0),
+                    "lon": float(lon or 0),
+                    "osmid": int(osmid) if osmid is not None else None,
+                }
+            )
+    return hits
+
+
+def _roads_touching(graph, osmid: int) -> list[dict]:
+    try:
+        found = rows(graph.query(cypher.ROADS_TOUCHING, {"osmid": int(osmid)}))
+    except Exception:
+        return []
+    edges = []
+    for road_id, name, alat, alon, blat, blon, highway, status in found:
+        edges.append(
+            {
+                "road_id": road_id,
+                "name": name or road_id,
+                "alat": float(alat or 0),
+                "alon": float(alon or 0),
+                "blat": float(blat or 0),
+                "blon": float(blon or 0),
+                "adistrict": "",
+                "bdistrict": "",
+                "aname": "",
+                "bname": "",
+                "highway": highway or "",
+                "status": status or "open",
+                "near_landmark": True,
+            }
+        )
+    return edges
+
+
+def geocode_report(text: str, graph=None, lat: float | None = None, lon: float | None = None) -> dict:
+    """Street name or landmark → ROAD edges.
+
+    Whole words only, so 'tree' does not match 'street'. Short names (SV, MG)
+    and numbered roads (No.6) are kept. Unnamed ways whose name is the highway
+    type are skipped. Candidates are ranked by distance to the reporter and to
+    a matched Landmark. Without a graph the parsed tokens are returned and
+    ``edges`` stays empty.
+    """
+    parsed = parse_report_place(text)
+    result = {**parsed, "edges": [], "landmarks": [], "method": "name+distance"}
+    if graph is None:
+        return result
+    edges: list[dict] = []
+    seen = set()
+    for token in _search_phrases(parsed):
+        probes = [token]
+        if token.startswith("no "):
+            number = token.split()[-1]
+            probes = [f"no.{number}", f"no. {number}", f"no {number}", number]
+        for probe in probes:
+            try:
+                batch = _road_rows(graph, probe)
+            except Exception:
+                batch = []
+            for edge in batch:
+                key = (edge["road_id"], edge["alat"], edge["blat"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                edges.append(edge)
+    landmarks = _landmark_hits(graph, parsed.get("landmark") or "")
+    for landmark in landmarks:
+        if landmark.get("osmid") is None:
+            continue
+        for edge in _roads_touching(graph, int(landmark["osmid"])):
             key = (edge["road_id"], edge["alat"], edge["blat"])
             if key in seen:
                 continue
             seen.add(key)
             edges.append(edge)
-    result["edges"] = _rank_edges(edges, parsed, lat, lon)
+    result["landmarks"] = [
+        {"id": item["id"], "name": item["name"], "dist_m": None, "osmid": item.get("osmid")}
+        for item in landmarks
+    ]
+    result["edges"] = _rank_edges(edges, parsed, lat, lon, landmarks)
     return result
 
 

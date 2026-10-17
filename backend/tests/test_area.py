@@ -370,9 +370,10 @@ def test_valencia_demo_does_not_reload_a_warm_graph(monkeypatch):
 def test_routing_endpoints_take_a_graph_id(monkeypatch):
     seen = {}
 
-    def fake_route(lat, lon, settings=None, dest_id=None):
+    def fake_route(lat, lon, settings=None, dest_id=None, citizen_id=None):
         seen["route"] = settings.graph
         seen["dest"] = dest_id
+        seen["citizen"] = citizen_id
         return {"ok": True}
 
     def fake_overlay(settings=None):
@@ -638,12 +639,11 @@ def test_valencia_city_slug_uses_the_existing_demo(monkeypatch):
 def test_report_and_sse_accept_every_bundled_city(monkeypatch):
     seen = {}
 
-    def fake_report(text, settings=None):
+    def fake_report(text, settings=None, lat=None, lon=None, citizen_id=None):
         seen["report"] = settings.graph
         return {"closed_roads": []}
 
     monkeypatch.setattr("floodline.api.file_report", fake_report)
-    monkeypatch.setattr("floodline.api.note_reroute", lambda *_args, **_kwargs: {})
     monkeypatch.setattr("floodline.api.get_graph", lambda settings=None: object())
     monkeypatch.setattr("floodline.api.collect_events", lambda graph, since: [])
     client = TestClient(app)

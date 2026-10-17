@@ -171,28 +171,79 @@ def reopen_roads(
     return state
 
 
-def file_report(text: str = DEMO_REPORT, settings: Settings | None = None, at: str | None = None) -> dict:
+def file_report(
+    text: str = DEMO_REPORT,
+    settings: Settings | None = None,
+    at: str | None = None,
+    lat: float | None = None,
+    lon: float | None = None,
+    citizen_id: str | None = None,
+) -> dict:
     cfg = settings or Settings.from_env()
     graph = get_graph(cfg)
     when = at or utc_now()
-    scout = handle_report(graph, text, at=when)
-    dispatcher = reroute(graph, at=when)
-    try:
-        from floodline.analysis import assess_loaded_area
+    scout = handle_report(graph, text, at=when, lat=lat, lon=lon, citizen_id=citizen_id)
+    dispatcher: dict = {"claimed": False}
+    analyst: dict = {}
+    if scout.get("task_id"):
+        dispatcher = reroute(graph, at=when)
+        try:
+            from floodline.analysis import assess_loaded_area
 
-        analyst = assess_loaded_area(
-            graph,
-            at=when,
-            report_id=scout.get("report_id") or "",
-            previous_task=dispatcher.get("task_id") or scout.get("task_id") or "",
-        )
-    except Exception as exc:
-        analyst = {"error": str(exc)}
+            analyst = assess_loaded_area(
+                graph,
+                at=when,
+                report_id=scout.get("report_id") or "",
+                previous_task=dispatcher.get("task_id") or scout.get("task_id") or "",
+            )
+        except Exception as exc:
+            analyst = {"error": str(exc)}
     state = snapshot(cfg)
     state["scout"] = scout
     state["dispatcher"] = dispatcher
     state["analyst"] = analyst
+    closed = (scout.get("closed") or {}) if scout.get("action") == "close" else {}
+    road_id = closed.get("road_id") or ""
+    if road_id:
+        from floodline.escape import note_reroute
+
+        state["citizen_reroute"] = note_reroute(road_id, cfg)
+    state["rejected"] = bool(scout.get("rejected"))
+    state["action"] = scout.get("action")
+    state["message"] = scout.get("message") or ""
     return state
+
+
+def reset_agent_memory(settings: Settings | None = None) -> dict:
+    """Clear Reports, Tasks, Decisions, and Citizens on one graph and reopen its roads.
+
+    The street graph stays. Used before a demo recording. Admin token required at the HTTP layer.
+    """
+    cfg = settings or Settings.from_env()
+    graph = get_graph(cfg)
+    closed = rows(
+        graph.query(
+            """
+            MATCH ()-[r:ROAD {status: 'closed'}]->()
+            RETURN DISTINCT r.road_id
+            """
+        )
+    )
+    for (road_id,) in closed:
+        if road_id:
+            reopen_road(graph, road_id)
+    before = {
+        label: int(rows(graph.query(f"MATCH (n:{label}) RETURN count(n)"))[0][0] or 0)
+        for label in ("Report", "Task", "Decision", "Citizen")
+    }
+    graph.query(
+        """
+        MATCH (n)
+        WHERE n:Report OR n:Task OR n:Decision OR n:Citizen
+        DETACH DELETE n
+        """
+    )
+    return {"ok": True, "graph": cfg.graph, "cleared": before, "reopened": [road_id for (road_id,) in closed if road_id]}
 
 
 def snapshot(settings: Settings | None = None) -> dict:
@@ -389,10 +440,7 @@ def snapshot(settings: Settings | None = None) -> dict:
 
     closed = sorted({edge["road_id"] for edge in edges if edge["status"] == "closed"})
     narrative = {
-        "closure": next(
-            (item["explanation"] for item in decisions if item["kind"] == "close"),
-            None,
-        ),
+        "closure": _newest_closure(decisions, network),
         "route": None,
     }
     active = routes["after"] or routes["before"]
@@ -421,6 +469,22 @@ def snapshot(settings: Settings | None = None) -> dict:
         "decisions": decisions,
         "narrative": narrative,
     }
+
+
+def _newest_closure(decisions: list[dict], network: dict) -> str | None:
+    """The latest close on this graph. A city tile does not surface an old Valencia sentence."""
+    closes = [item for item in decisions if item.get("kind") == "close" and item.get("explanation")]
+    if (network or {}).get("source") != "synthetic":
+        closes = [
+            item
+            for item in closes
+            if "DANA" not in item["explanation"]
+            and "2024-10-29" not in item["explanation"]
+            and "Valencia corridor" not in item["explanation"]
+        ]
+    if not closes:
+        return None
+    return closes[-1]["explanation"]
 
 
 def _clock(network: dict) -> dict:

@@ -19,7 +19,18 @@ from floodline.navigation import dedupe_route_title
 MEMORY_LABELS = ["Report", "Decision", "Task", "Agent", "Unit", "Shelter", "Hospital", "Citizen", "Incident"]
 # Memory edges among those labels. Intersection-facing edges (USED_EDGE, ACCESS, AT, NEAR) are left out:
 # they belong to the road network, which the map view shows.
-MEMORY_RELS = ["MADE", "CLAIMED", "BASED_ON", "SUPERSEDES", "AFFECTS", "HANDOFF", "FOR", "REROUTED", "CLOSES"]
+MEMORY_RELS = [
+    "MADE",
+    "CLAIMED",
+    "BASED_ON",
+    "SUPERSEDES",
+    "AFFECTS",
+    "HANDOFF",
+    "FOR",
+    "REROUTED",
+    "CLOSES",
+    "DUPLICATE_OF",
+]
 
 _DECISIONS_Q = """
 MATCH (d:Decision)
@@ -166,13 +177,39 @@ RETURN a.osmid, b.osmid, r.road_id, r.name, r.status, r.highway
 LIMIT $limit
 """
 
-_ROUTE_Q = """
-MATCH (d:Decision {kind: 'route'})
-WHERE coalesce(d.superseded, false) = false
-RETURN d.path_osmids
-ORDER BY coalesce(d.seq, 0) DESC
+_CITIZEN_ROUTE_Q = """
+MATCH (c:Citizen)
+WHERE c.path_osmids IS NOT NULL AND c.path_osmids <> ''
+RETURN c.path_osmids
+ORDER BY c.updated_at DESC
 LIMIT 1
 """
+
+_ROUTE_Q = """
+MATCH (d:Decision)
+WHERE d.kind IN ['citizen_route', 'route'] AND coalesce(d.superseded, false) = false
+RETURN d.path_osmids
+ORDER BY CASE d.kind WHEN 'citizen_route' THEN 0 ELSE 1 END, coalesce(d.seq, 0) DESC
+LIMIT 1
+"""
+
+
+def _parse_osmids(raw) -> list[int]:
+    if not raw:
+        return []
+    values = json.loads(raw) if isinstance(raw, str) else raw
+    return [int(item) for item in values]
+
+
+def _active_route_osmids(graph) -> list[int]:
+    """The green highlight is the citizen's route, not the ambulance's."""
+    found = rows(graph.query(_CITIZEN_ROUTE_Q))
+    if found and found[0][0]:
+        return _parse_osmids(found[0][0])
+    found = rows(graph.query(_ROUTE_Q))
+    if found and found[0][0]:
+        return _parse_osmids(found[0][0])
+    return []
 
 
 def summarise_components(components: dict[int, int]) -> tuple[int | None, dict[int, int]]:
@@ -197,11 +234,7 @@ def network_geojson(graph, max_edges: int = 30000, route_osmids: list[int] | Non
     components = {int(o): int(c) for o, c in rows(graph.query(cypher.WCC_PASSABLE))}
     main, sizes = summarise_components(components)
     if route_osmids is None:
-        found = rows(graph.query(_ROUTE_Q))
-        route_osmids = []
-        if found and found[0][0]:
-            raw = found[0][0]
-            route_osmids = [int(x) for x in (json.loads(raw) if isinstance(raw, str) else raw)]
+        route_osmids = _active_route_osmids(graph)
     route_pairs = {
         frozenset((a, b)) for a, b in zip(route_osmids, route_osmids[1:])
     }

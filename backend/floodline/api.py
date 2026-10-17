@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request
@@ -25,12 +26,12 @@ from floodline.area import (
 )
 from floodline.config import Settings
 from floodline.db import get_graph
-from floodline.escape import cutoff_zones, note_reroute, overlay_payload, route_payload
+from floodline.escape import cutoff_zones, overlay_payload, route_payload
 from floodline.graphview import memory_graph, network_geojson
 from floodline.events import collect_events, format_sse
 from floodline.network import DEMO_REPORT
 from floodline.osm_demo import load_osm_graph
-from floodline.scenario import file_report, reopen_roads, reset_scenario, snapshot
+from floodline.scenario import file_report, reopen_roads, reset_agent_memory, reset_scenario, snapshot
 
 app = FastAPI(title="Floodline", version="0.1.0")
 app.add_middleware(
@@ -44,6 +45,16 @@ app.add_middleware(
 class ReportIn(BaseModel):
     text: str = Field(default=DEMO_REPORT, min_length=1)
     graph: str | None = None
+    lat: float | None = Field(default=None, ge=-90, le=90)
+    lon: float | None = Field(default=None, ge=-180, le=180)
+    citizen: str | None = Field(default=None, max_length=80)
+
+
+def _citizen_key(value: str | None) -> str | None:
+    text = (value or "").strip()
+    if re.fullmatch(r"[A-Za-z0-9_-]{8,80}", text):
+        return text
+    return None
 
 
 class ReopenIn(BaseModel):
@@ -107,19 +118,33 @@ def reset() -> dict:
     return _guard(reset_scenario)
 
 
+@app.post("/api/admin/memory/reset")
+def memory_reset(
+    graph: str | None = Query(default=None),
+    authorization: str | None = Header(default=None),
+    x_admin_token: str | None = Header(default=None),
+) -> dict:
+    """Clear Reports, Tasks, Decisions, and Citizens on one tile. Reopens closed roads.
+
+    Requires the same admin token as the Valencia load. The street graph stays.
+    """
+    require_admin(authorization, x_admin_token)
+    cfg = _settings_for(graph)
+    return _guard(lambda: reset_agent_memory(cfg))
+
+
 @app.post("/api/scenario/report")
 def report(body: ReportIn, graph: str | None = Query(default=None)) -> dict:
     cfg = _settings_for(graph or body.graph)
-
-    def run():
-        state = file_report(body.text, cfg)
-        closed = state.get("closed_roads") or []
-        road_id = closed[-1] if closed else ""
-        if road_id:
-            state["citizen_reroute"] = note_reroute(road_id, cfg)
-        return state
-
-    return _guard(run)
+    return _guard(
+        lambda: file_report(
+            body.text,
+            cfg,
+            lat=body.lat,
+            lon=body.lon,
+            citizen_id=_citizen_key(body.citizen),
+        )
+    )
 
 
 @app.post("/api/road/reopen")
@@ -257,10 +282,11 @@ def citizen_route(
     lon: float = Query(..., ge=-180, le=180),
     graph: str | None = Query(default=None),
     dest: str | None = Query(default=None, max_length=80),
+    citizen: str | None = Query(default=None, max_length=80),
 ) -> dict:
     """GeoJSON line, turn steps, and ETA. Shelter choice is route_to_shelter."""
     cfg = _settings_for(graph)
-    return _guard(lambda: route_payload(lat, lon, cfg, dest_id=dest))
+    return _guard(lambda: route_payload(lat, lon, cfg, dest_id=dest, citizen_id=_citizen_key(citizen)))
 
 
 @app.get("/api/escape/overlay")
